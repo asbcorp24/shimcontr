@@ -1,0 +1,72 @@
+#include <Arduino.h>
+
+// ===== ПИНЫ =====
+#define RC_PIN   2
+#define ENC_A   17
+#define ENC_B   16
+
+// ===== RC PWM =====
+#define PWM_CH     0
+#define PWM_FREQ   50        // 50 Гц
+#define PWM_RES    16
+#define PWM_MAX    65535
+
+// RC диапазон
+#define RC_MIN_US  1000
+#define RC_MAX_US  2000
+#define RC_CENTER  1500
+
+volatile int rcPulse = RC_CENTER;
+volatile int lastA = 0;
+
+// ===== Конвертация мкс → duty =====
+uint32_t pulseToDuty(int us)
+{
+    return (uint32_t)((us * (uint64_t)PWM_MAX) / 20000);
+}
+
+void IRAM_ATTR encoderISR()
+{
+    int A = digitalRead(ENC_A);
+    int B = digitalRead(ENC_B);
+
+    if (A != lastA)
+    {
+        if (A == B)
+            rcPulse += 10;   // шаг 10 мкс
+        else
+            rcPulse -= 10;
+
+        rcPulse = constrain(rcPulse, RC_MIN_US, RC_MAX_US);
+        ledcWrite(PWM_CH, pulseToDuty(rcPulse));
+    }
+    lastA = A;
+}
+
+void setup()
+{
+    Serial.begin(115200);
+
+    pinMode(ENC_A, INPUT_PULLUP);
+    pinMode(ENC_B, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(ENC_A), encoderISR, CHANGE);
+
+    ledcSetup(PWM_CH, PWM_FREQ, PWM_RES);
+    ledcAttachPin(RC_PIN, PWM_CH);
+    ledcWrite(PWM_CH, pulseToDuty(rcPulse));
+
+    Serial.println("RC receiver emulator ready");
+}
+
+void loop()
+{
+    static int last = 0;
+    if (last != rcPulse)
+    {
+        Serial.print("RC pulse: ");
+        Serial.print(rcPulse);
+        Serial.println(" us");
+        last = rcPulse;
+    }
+    delay(50);
+}

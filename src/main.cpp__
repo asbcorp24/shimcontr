@@ -1,0 +1,69 @@
+#include <Arduino.h>
+#include "driver/rmt.h"
+#include "driver/gpio.h"
+
+#define PWM_PIN GPIO_NUM_19
+#define RMT_CH  RMT_CHANNEL_0
+
+RingbufHandle_t rb = nullptr;
+
+void setupPWM()
+{
+    gpio_set_direction(PWM_PIN, GPIO_MODE_INPUT);
+    gpio_pullup_en(PWM_PIN);
+    gpio_pulldown_dis(PWM_PIN);
+
+    rmt_config_t cfg = {};
+    cfg.rmt_mode = RMT_MODE_RX;
+    cfg.channel = RMT_CH;
+    cfg.gpio_num = PWM_PIN;
+    cfg.mem_block_num = 1;
+    cfg.clk_div = 80; // 1 µs
+    cfg.rx_config.filter_en = true;
+    cfg.rx_config.filter_ticks_thresh = 10;
+    cfg.rx_config.idle_threshold = 2500; // <= ВАЖНО
+
+    ESP_ERROR_CHECK(rmt_config(&cfg));
+    ESP_ERROR_CHECK(rmt_driver_install(cfg.channel, 2048, 0));
+    ESP_ERROR_CHECK(rmt_get_ringbuf_handle(cfg.channel, &rb));
+    ESP_ERROR_CHECK(rmt_rx_start(cfg.channel, true));
+
+    Serial.println("[RMT] RX started on GPIO19");
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(500);
+    Serial.println("\n=== PWM RMT DEBUG ===");
+    setupPWM();
+}
+
+void loop()
+{
+    size_t rx_size = 0;
+    rmt_item32_t *items =
+        (rmt_item32_t *)xRingbufferReceive(rb, &rx_size, pdMS_TO_TICKS(500));
+
+    if (!items)
+    {
+        Serial.println("❌ no signal");
+        return;
+    }
+
+    int count = rx_size / sizeof(rmt_item32_t);
+    Serial.printf("✔ items=%d | ", count);
+
+    for (int i = 0; i < count; i++)
+    {
+        Serial.printf(
+            "[%d] L0=%d D0=%u | L1=%d D1=%u  ",
+            i,
+            items[i].level0, items[i].duration0,
+            items[i].level1, items[i].duration1
+        );
+    }
+    Serial.println();
+
+    vRingbufferReturnItem(rb, items);
+}
