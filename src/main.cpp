@@ -34,6 +34,40 @@ int fieldIdx = 0;   // выбор поля в редакторе
 
 // Глобальные флаги редактора
 Rule *edit = nullptr;
+struct OutputState {
+    bool active;
+    float value;        // 0..1 или Вольты
+    uint32_t lastChange;
+};
+
+OutputState outputState[32];   // DAC + BTS + RELAY + REV
+enum OutputType {
+    OUT_DAC,
+    OUT_BTS,
+    OUT_RELAY,
+    OUT_REVERSER
+};
+struct OutputMap {
+    OutputType type;
+    uint8_t hwIndex;
+};
+
+OutputMap outputMap[32] = {
+    // 0–15 DAC
+    {OUT_DAC, 0}, {OUT_DAC, 1}, {OUT_DAC, 2}, {OUT_DAC, 3},
+    {OUT_DAC, 4}, {OUT_DAC, 5}, {OUT_DAC, 6}, {OUT_DAC, 7},
+    {OUT_DAC, 8}, {OUT_DAC, 9}, {OUT_DAC,10}, {OUT_DAC,11},
+    {OUT_DAC,12}, {OUT_DAC,13}, {OUT_DAC,14}, {OUT_DAC,15},
+
+    // 16–19 BTS
+    {OUT_BTS, 0}, {OUT_BTS, 1}, {OUT_BTS, 2}, {OUT_BTS, 3},
+
+    // 20–23 RELAY
+    {OUT_RELAY, 0}, {OUT_RELAY, 1}, {OUT_RELAY, 2}, {OUT_RELAY, 3},
+
+    // 24–27 REVERSER
+    {OUT_REVERSER, 0}, {OUT_REVERSER, 1}, {OUT_REVERSER, 2}, {OUT_REVERSER, 3}
+};
 
 // Прототипы
 void saveRules();
@@ -69,6 +103,25 @@ bool isBackClicked();
 #define PWM_INPUT_PIN6 2
 #define PWM_INPUT_PIN7 23
 #define PWM_INPUT_PIN8 34
+
+
+// ===== REVERSER (H-bridge / реле направления) =====
+const uint8_t revA[4] = {
+    26,  // REV1_A
+    27,  // REV2_A
+    14,  // REV3_A
+    12   // REV4_A
+};
+
+const uint8_t revB[4] = {
+    25,  // REV1_B
+    33,  // REV2_B
+    32,  // REV3_B
+    13   // REV4_B
+};
+
+
+
 
 // ======================================================================
 //                         ГЛОБАЛЬНЫЕ PWM ПЕРЕМЕННЫЕ
@@ -111,7 +164,72 @@ std::vector<Rule> rules[8];
 // ======================================================================
 //                            RMT PWM INIT
 // ======================================================================
- 
+ bool checkCondition(const Rule& r, uint16_t pwm)
+{
+    switch (r.kind)
+    {
+    case Rule::ANY:
+        return true;
+
+    case Rule::BELOW:
+        return pwm < r.aUs;
+
+    case Rule::ABOVE:
+        return pwm > r.aUs;
+
+    case Rule::BETWEEN:
+        return (pwm >= r.aUs && pwm <= r.bUs);
+    }
+    return false;
+}
+void ruleTask(void* p)
+{
+    Serial.println("[RULE] ruleTask started");
+
+    static uint32_t lastTick = 0;
+
+    for (;;)
+    {
+        uint32_t now = millis();
+        if (now - lastTick < 20)   // 50 Гц
+        {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        lastTick = now;
+
+        for (int ch = 0; ch < 8; ch++)
+        {
+            uint16_t pwm = pwmWidth[ch];
+            if (pwm < 900 || pwm > 2100)
+                continue;
+
+            for (auto& r : rules[ch])
+            {
+                bool cond = checkCondition(r, pwm);
+                int out = r.targetIndex;
+
+                OutputState& o = outputState[out];
+
+                if (cond && !o.active)
+                {
+                    o.active = true;
+                    o.lastChange = now;
+                    o.value = map(pwm, 1000, 2000, 0, 1000) / 1000.0f;
+                }
+                else if (!cond && o.active)
+                {
+                    o.active = false;
+                    o.lastChange = now;
+                    o.value = 0;
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
 
 void pwmTask(void *p)
 {
@@ -269,6 +387,43 @@ const char* menuName(MenuState m)
     }
     return "?";
 }
+void setBts(uint8_t ch, float v)
+{
+    uint32_t duty = constrain(v * 1023, 0, 1023);
+    ledcWrite(ch, duty);
+}
+
+void setRelay(uint8_t ch, bool on)
+{
+  //  digitalWrite(relayPins[ch], on ? HIGH : LOW);
+}
+void setDac(uint8_t ch, float v)
+{
+    uint8_t value = constrain(v * 255.0f, 0, 255);
+    dacWrite(25 + ch, value); // пример!
+}
+
+
+void setReverser(uint8_t ch, float v)
+{
+    if (v > 0.55)
+    {
+        digitalWrite(revA[ch], HIGH);
+        digitalWrite(revB[ch], LOW);
+    }
+    else if (v < 0.45)
+    {
+        digitalWrite(revA[ch], LOW);
+        digitalWrite(revB[ch], HIGH);
+    }
+    else
+    {
+        digitalWrite(revA[ch], LOW);
+        digitalWrite(revB[ch], LOW);
+    }
+}
+
+
 
 // ======================================================================
 //                          SAVE / LOAD
@@ -348,6 +503,47 @@ void loadRules()
 // ======================================================================
 //                        DRAW STATUS
 // ======================================================================
+void outputTask(void* p)
+{
+    Serial.println("[OUT] outputTask started");
+
+    for (;;)
+    {
+        for (int i = 0; i < 32; i++)
+        {
+            OutputState& o = outputState[i];
+            OutputMap&   m = outputMap[i];
+
+            if (!o.active)
+            {
+                if (m.type == OUT_RELAY)
+                    setRelay(m.hwIndex, false);
+                continue;
+            }
+
+            switch (m.type)
+            {
+            case OUT_DAC:
+                setDac(m.hwIndex, o.value);
+                break;
+
+            case OUT_BTS:
+                setBts(m.hwIndex, o.value);
+                break;
+
+            case OUT_RELAY:
+                setRelay(m.hwIndex, true);
+                break;
+
+            case OUT_REVERSER:
+                setReverser(m.hwIndex, o.value);
+                break;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 void drawStatus()
 {
@@ -543,6 +739,29 @@ void applyTypeDefaults(ActType t, Rule *r)
         break;
     }
 }
+void drawPwmMini(int x, int y, int pwm)
+{
+    // рамка
+    u8g2.drawFrame(x, y, 36, 20);
+
+    // текст
+    char buf[8];
+    if (pwm >= 900 && pwm <= 2100)
+        sprintf(buf, "%d", pwm);
+    else
+        strcpy(buf, "--");
+
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(x + 3, y + 8, buf);
+
+    // мини-бар
+    int h = 0;
+    if (pwm >= 900 && pwm <= 2100)
+        h = map(pwm, 1000, 2000, 0, 12);
+
+    h = clampi(h, 0, 12);
+    u8g2.drawBox(x + 30, y + 18 - h, 4, h);
+}
 
 void drawEdit()
 {
@@ -595,7 +814,8 @@ void drawEdit()
     u8g2.setDrawColor(fieldIdx == 5 ? 0 : 1);
     u8g2.drawStr(2, 60, line);
     u8g2.setDrawColor(1);
-
+ // ===== PWM индикатор выбранного канала =====
+    drawPwmMini(88, 0, pwmWidth[selCh]);
     u8g2.sendBuffer();
 }
 
@@ -964,6 +1184,8 @@ xTaskCreatePinnedToCore(
     }
 
     xTaskCreatePinnedToCore(uiTask, "UI", 4096, nullptr, 1, nullptr, 1);
+xTaskCreatePinnedToCore(ruleTask,"RULE", 4096,nullptr,2,nullptr,0);
+xTaskCreatePinnedToCore(outputTask,"OUT",4096,nullptr,1,nullptr,0);
 
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x12_tr);
