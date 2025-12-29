@@ -25,7 +25,7 @@ static const uint8_t BTS_LPWM[4] = {26, 14, 13, 33};
 
 void halInit()
 {
-    delay(1000*6); // wait for debugger attach
+   
     Wire.begin();
 
     // MCP23017 Инициализация
@@ -38,7 +38,7 @@ void halInit()
     // Настроим все пины расширителя как выходы (0..15)
     for (uint8_t pin = 0; pin < 16; pin++) {
         mcp.pinMode(pin, OUTPUT);
-        mcp.digitalWrite(pin, LOW);
+        mcp.digitalWrite(pin, HIGH);
     }
 
     // PCA9685
@@ -114,18 +114,24 @@ void setBts(uint8_t idx, float value)
 // ========== INPUT FUNCTIONS (MCP23017 buttons & encoder) ==========
 
 bool halReadEncA() {
-    // MCP ENCODER A на B0
-    return mcp.digitalRead(8 + 0) == HIGH;
+    bool state = mcp.digitalRead(8 + 0) == HIGH;
+    Serial.print("Enc A: ");
+    Serial.println(state);
+    return state;
 }
 
 bool halReadEncB() {
-    // MCP ENCODER B на B1
-    return mcp.digitalRead(8 + 1) == HIGH;
+    bool state = mcp.digitalRead(8 + 1) == HIGH;
+    Serial.print("Enc B: ");
+    Serial.println(state);
+    return state;
 }
 
 bool halReadEncBtn() {
-    // MCP encoder button на A7 — pressed = LOW
-    return mcp.digitalRead(7) == LOW;
+    bool state = mcp.digitalRead(7) == LOW;
+    Serial.print("Enc Btn: ");
+    Serial.println(state);
+    return state;
 }
 
 bool halReadBackBtn() {

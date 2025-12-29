@@ -1,44 +1,37 @@
 #include <Wire.h>
-#include <Arduino.h>
+#include <Adafruit_MCP23X17.h>
+
+Adafruit_MCP23X17 mcp;
+
 void setup() {
-  // Инициализация последовательного порта
   Serial.begin(115200);
+  Wire.begin();
+
+  // Инициализация MCP23017
+  if (!mcp.begin_I2C()) {
+    Serial.println("[ERROR] MCP23017 initialization failed.");
+    while (1); // Ожидание, если инициализация не удалась
+  }
   
-  // Инициализация шины I2C (SDA = 21, SCL = 22 для ESP32)
-  Wire.begin(21, 22); 
+  Serial.println("[INFO] MCP23017 initialized.");
   
-  Serial.println("Перебор всех I2C устройств...");
+  // Настройка всех пинов как входы
+  for (uint8_t pin = 0; pin < 16; pin++) {
+mcp.pinMode(pin, INPUT_PULLUP); // ✅ включает внутренний подтягивающий резистор
+  }
+  
+  Serial.println("[INFO] All pins set to INPUT with pull-ups.");
 }
 
 void loop() {
-  // Переменная для хранения найденных адресов
-  String foundDevices = "";
-
-  // Перебор всех возможных адресов I2C (от 1 до 127)
-  for (uint8_t address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    uint8_t error = Wire.endTransmission();
-    
-    if (error == 0) {
-      // Если устройство отвечает, добавляем его в список
-      foundDevices += "Устройство найдено на адресе: 0x";
-      foundDevices += String(address, HEX);
-      foundDevices += "\n";
-    } else if (error == 4) {
-      // Если ошибка 4, это значит, что устройство не отвечает, но ошибка не критична
-      foundDevices += "Ошибка на адресе: 0x";
-      foundDevices += String(address, HEX);
-      foundDevices += "\n";
-    }
+  // Проверка всех пинов MCP23017
+  for (uint8_t pin = 0; pin < 16; pin++) {
+    bool pinState = mcp.digitalRead(pin);
+    Serial.print("Pin ");
+    Serial.print(pin);
+    Serial.print(": ");
+    Serial.println(pinState ? "HIGH" : "LOW");
   }
-
-  // Если найдено хотя бы одно устройство, выводим список
-  if (foundDevices.length() > 0) {
-    Serial.print(foundDevices); // Выводим найденные адреса в Serial Monitor
-  } else {
-    Serial.println("Устройства не найдены.");
-  }
-
-  // Задержка перед следующей проверкой
-  delay(5000); // Ожидаем 5 секунд перед следующим циклом
+  
+  delay(1000);  // Пауза 1 секунда между проверками
 }
