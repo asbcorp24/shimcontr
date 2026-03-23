@@ -1,0 +1,47 @@
+#include <Wire.h>
+#include <Adafruit_MCP23X17.h>
+
+Adafruit_MCP23X17 mcp;
+
+#define MCP_ADDR 0x20
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  Serial.println("\n🔍 MCP23017 INPUT TEST (ALL PINS)");
+
+  if (!mcp.begin_I2C(MCP_ADDR)) {
+    Serial.println("❌ MCP23017 NOT FOUND");
+    while (1);
+  }
+
+  Serial.println("✅ MCP23017 FOUND");
+
+  // Все 16 пинов — INPUT + PULLUP
+  for (int pin = 0; pin < 16; pin++) {
+    mcp.pinMode(pin, INPUT_PULLUP);
+
+  }
+
+  Serial.println("➡️ All pins set to INPUT_PULLUP");
+  Serial.println("👉 Short pin to GND to test");
+  Serial.println("--------------------------------");
+}
+
+void loop() {
+  for (int pin = 0; pin < 16; pin++) {
+    int val = mcp.digitalRead(pin);
+
+    Serial.print("PIN ");
+    if (pin < 10) Serial.print(" ");
+    Serial.print(pin);
+    Serial.print(" : ");
+    Serial.println(val == HIGH ? "HIGH (idle)" : "LOW  (ACTIVE)");
+
+    delay(1050);
+  }
+
+  Serial.println("--------------------------------");
+  delay(500);
+}

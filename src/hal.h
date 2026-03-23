@@ -3,7 +3,7 @@
 
 // ===================== INIT =====================
 void halInit();
-
+int halReadNavStep();
 // ===================== RELAY =====================
 void setRelay(uint8_t ch, bool on);
 

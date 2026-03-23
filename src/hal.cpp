@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_MCP23X17.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <math.h>
 
 // ================= MCP23017 =================
 static Adafruit_MCP23X17 mcp;
@@ -21,31 +22,82 @@ static Adafruit_PWMServoDriver pca(0x40);
 static const uint8_t BTS_RPWM[4] = {25, 27, 12, 32};
 static const uint8_t BTS_LPWM[4] = {26, 14, 13, 33};
 
-// =================================================
+ 
 
+ 
+// ================= BUTTONS A/B =================
+int halReadNavStep()
+{
+    static bool lastA = true;
+    static bool lastB = true;
+    static uint32_t lastMs = 0;
+
+    uint16_t gpio = mcp.readGPIOAB();
+
+    bool a = gpio & (1 << 8); // ENC A
+    bool b = gpio & (1 << 9); // ENC B
+
+    uint32_t now = millis();
+    if (now - lastMs < 120) {   // антидребезг
+        lastA = a;
+        lastB = b;
+        return 0;
+    }
+
+    int step = 0;
+
+    // A = NEXT
+    if (lastA && !a) {
+        step = +1;
+        lastMs = now;
+    }
+
+    // B = PREV
+    if (lastB && !b) {
+        step = -1;
+        lastMs = now;
+    }
+
+    lastA = a;
+    lastB = b;
+
+    return step;
+}
+
+// =================================================
 void halInit()
 {
-   
     Wire.begin();
 
-    // MCP23017 Инициализация
     if (!mcp.begin_I2C()) {
-        Serial.println("[HAL] MCP23017 begin_I2C FAILED");
+        Serial.println("[HAL] MCP23017 init FAILED");
     } else {
-        Serial.println("[HAL] MCP23017 started");
+        Serial.println("[HAL] MCP23017 OK");
     }
 
-    // Настроим все пины расширителя как выходы (0..15)
-    for (uint8_t pin = 0; pin < 16; pin++) {
-        mcp.pinMode(pin, OUTPUT);
-        mcp.digitalWrite(pin, HIGH);
+    // ---------- OUTPUTS ----------
+    for (uint8_t i = 0; i < 4; i++) {
+        mcp.pinMode(MCP_RELAY[i], OUTPUT);
+        mcp.digitalWrite(MCP_RELAY[i], HIGH);
+    }
+    for (uint8_t i = 0; i < 3; i++) {
+        mcp.pinMode(MCP_REV_ON[i], OUTPUT);
+        mcp.pinMode(MCP_REV_POL[i], OUTPUT);
+        mcp.digitalWrite(MCP_REV_ON[i], HIGH);
+        mcp.digitalWrite(MCP_REV_POL[i], HIGH);
     }
 
-    // PCA9685
+    // ---------- INPUTS ----------
+    mcp.pinMode(8, INPUT_PULLUP); // ENC A
+    mcp.pinMode(9, INPUT_PULLUP); // ENC B
+    mcp.pinMode(7, INPUT_PULLUP); // ENC BTN
+    mcp.pinMode(5, INPUT_PULLUP); // BACK BTN
+
+    // ---------- PCA9685 ----------
     pca.begin();
     pca.setPWMFreq(1000);
 
-    // BTS PWM (LEDC)
+    // ---------- BTS PWM ----------
     for (int i = 0; i < 4; i++) {
         int chR = i * 2;
         int chL = i * 2 + 1;
@@ -57,30 +109,25 @@ void halInit()
         ledcWrite(chL, 0);
     }
 
-    Serial.println("[HAL] Initialization complete");
+    Serial.println("[HAL] Init complete");
 }
 
 // ================= RELAYS =================
-
 void setRelay(uint8_t idx, bool on)
 {
     if (idx >= 4) return;
     mcp.digitalWrite(MCP_RELAY[idx], on ? HIGH : LOW);
 }
 
-// ===== POLARITY RELAY =====
-// polarity: true == forward, false == reverse
+// ================= POLARITY RELAY =================
 void setPolarityRelay(uint8_t idx, bool on, bool polarity)
 {
     if (idx >= 3) return;
-
-    // Включаем "ON" реле
     mcp.digitalWrite(MCP_REV_ON[idx], on ? HIGH : LOW);
-    // Направление
     mcp.digitalWrite(MCP_REV_POL[idx], polarity ? HIGH : LOW);
 }
 
-// ===== ENGINE PWM =====
+// ================= ENGINE PWM =================
 void setEnginePwm(uint8_t idx, float duty)
 {
     if (idx >= 16) return;
@@ -89,7 +136,7 @@ void setEnginePwm(uint8_t idx, float duty)
     pca.setPWM(idx, 0, pwm12);
 }
 
-// ===== BTS7960 =====
+// ================= BTS =================
 void setBts(uint8_t idx, float value)
 {
     if (idx >= 4) return;
@@ -111,30 +158,28 @@ void setBts(uint8_t idx, float value)
         ledcWrite(chL, 0);
     }
 }
-// ========== INPUT FUNCTIONS (MCP23017 buttons & encoder) ==========
 
-bool halReadEncA() {
-    bool state = mcp.digitalRead(8 + 0) == HIGH;
-    Serial.print("Enc A: ");
-    Serial.println(state);
-    return state;
+// ================= INPUTS =================
+bool halReadEncA()    { return (mcp.readGPIOAB() & (1 << 8)); }
+bool halReadEncB()    { return (mcp.readGPIOAB() & (1 << 9)); }
+bool halReadEncBtn()  {
+    static bool last = true;
+    static uint32_t lastMs = 0;
+
+    uint16_t gpio = mcp.readGPIOAB();
+    bool cur = gpio & (1 << 7); // HIGH = отпущена
+
+    uint32_t now = millis();
+    if (now - lastMs < 150) {
+        last = cur;
+        return false;
+    }
+
+    bool clicked = (last == true && cur == false);
+    if (clicked) lastMs = now;
+
+    last = cur;
+    return clicked;
 }
 
-bool halReadEncB() {
-    bool state = mcp.digitalRead(8 + 1) == HIGH;
-    Serial.print("Enc B: ");
-    Serial.println(state);
-    return state;
-}
-
-bool halReadEncBtn() {
-    bool state = mcp.digitalRead(7) == LOW;
-    Serial.print("Enc Btn: ");
-    Serial.println(state);
-    return state;
-}
-
-bool halReadBackBtn() {
-    // MCP back button на A5 — pressed = LOW
-    return mcp.digitalRead(5) == LOW;
-}
+bool halReadBackBtn() { return (mcp.readGPIOAB() & (1 << 5)) == 0; }

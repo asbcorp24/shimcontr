@@ -1,0 +1,66 @@
+#include <U8g2lib.h>
+
+// I2C pins
+#define I2C_SDA 21
+#define I2C_SCL 22
+
+// OLED init (hw I2C)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
+
+const char* testText = "Привет 123"; // будет выводиться под каждым шрифтом
+
+// Список шрифтов для теста
+const uint8_t* fontList[] = {
+  u8g2_font_unifont_t_cyrillic,
+
+  u8g2_font_6x12_t_cyrillic,
+  u8g2_font_cu12_t_cyrillic,
+  u8g2_font_10x20_t_cyrillic,
+  u8g2_font_inr30_t_cyrillic,
+
+  nullptr // маркер конца
+};
+
+const char* fontNames[] = {
+  "unifont_t_cyr",
+  "unifont_tf_cyr",
+  "6x12_t_cyr",
+  "cu12_t_cyr",
+  "10x20_t_cyr",
+  "inr30_t_cyr",
+  "px11_t_cyr"
+};
+
+void setup() {
+  Serial.begin(115200);
+  u8g2.begin();
+  u8g2.enableUTF8Print();
+  Serial.println("Font test starting...");
+}
+
+void loop() {
+  for (int i = 0; fontList[i] != nullptr; i++) {
+    u8g2.clearBuffer();
+
+    // Устанавливаем текущий шрифт из списка
+    u8g2.setFont(fontList[i]);
+
+    // Пишем имя шрифта сверху
+    u8g2.drawUTF8(0, 12, fontNames[i]);
+
+    // Пишем тестовый текст ниже
+    u8g2.drawUTF8(0, 30, testText);
+
+    // Показываем на экране
+    u8g2.sendBuffer();
+
+    // Отладочный вывод в Serial
+    Serial.print("Showing font: ");
+    Serial.println(fontNames[i]);
+
+    // Пауза, чтобы успеть посмотреть
+    delay(3000);
+  }
+
+  // Повторять цикл
+}
