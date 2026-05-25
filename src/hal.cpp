@@ -4,6 +4,8 @@
 #include <Adafruit_MCP23X17.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 // ================= MCP23017 =================
 static Adafruit_MCP23X17 mcp;
@@ -17,6 +19,7 @@ static const uint8_t MCP_REV_POL[3] = {8+3, 8+5, 8+7}; // B3, B5, B7
 
 // ================= PCA9685 =================
 static Adafruit_PWMServoDriver pca(0x40);
+static SemaphoreHandle_t gI2cMutex = nullptr;
 
 // ================= BTS7960 =================
 static const uint8_t BTS_RPWM[4] = {25, 27, 12, 32};
@@ -25,6 +28,16 @@ static const uint8_t BTS_LPWM[4] = {26, 14, 13, 33};
  
 
  
+void halI2CLock()
+{
+    if (gI2cMutex) xSemaphoreTakeRecursive(gI2cMutex, portMAX_DELAY);
+}
+
+void halI2CUnlock()
+{
+    if (gI2cMutex) xSemaphoreGiveRecursive(gI2cMutex);
+}
+
 // ================= BUTTONS A/B =================
 int halReadNavStep()
 {
@@ -32,7 +45,9 @@ int halReadNavStep()
     static bool lastB = true;
     static uint32_t lastMs = 0;
 
+    halI2CLock();
     uint16_t gpio = mcp.readGPIOAB();
+    halI2CUnlock();
 
     bool a = gpio & (1 << 8); // ENC A
     bool b = gpio & (1 << 9); // ENC B
@@ -68,7 +83,9 @@ int halReadNavStep()
 void halInit()
 {
     Wire.begin();
+    gI2cMutex = xSemaphoreCreateRecursiveMutex();
 
+    halI2CLock();
     if (!mcp.begin_I2C()) {
         Serial.println("[HAL] MCP23017 init FAILED");
     } else {
@@ -96,6 +113,7 @@ void halInit()
     // ---------- PCA9685 ----------
     pca.begin();
     pca.setPWMFreq(1000);
+    halI2CUnlock();
 
     // ---------- BTS PWM ----------
     for (int i = 0; i < 4; i++) {
@@ -116,15 +134,19 @@ void halInit()
 void setRelay(uint8_t idx, bool on)
 {
     if (idx >= 4) return;
+    halI2CLock();
     mcp.digitalWrite(MCP_RELAY[idx], on ? HIGH : LOW);
+    halI2CUnlock();
 }
 
 // ================= POLARITY RELAY =================
 void setPolarityRelay(uint8_t idx, bool on, bool polarity)
 {
     if (idx >= 3) return;
+    halI2CLock();
     mcp.digitalWrite(MCP_REV_ON[idx], on ? HIGH : LOW);
     mcp.digitalWrite(MCP_REV_POL[idx], polarity ? HIGH : LOW);
+    halI2CUnlock();
 }
 
 // ================= ENGINE PWM =================
@@ -133,7 +155,9 @@ void setEnginePwm(uint8_t idx, float duty)
     if (idx >= 16) return;
     duty = constrain(duty, 0.0f, 1.0f);
     uint16_t pwm12 = (uint16_t)(duty * 4095);
+    halI2CLock();
     pca.setPWM(idx, 0, pwm12);
+    halI2CUnlock();
 }
 
 // ================= BTS =================
@@ -160,13 +184,15 @@ void setBts(uint8_t idx, float value)
 }
 
 // ================= INPUTS =================
-bool halReadEncA()    { return (mcp.readGPIOAB() & (1 << 8)); }
-bool halReadEncB()    { return (mcp.readGPIOAB() & (1 << 9)); }
+bool halReadEncA()    { halI2CLock(); bool v = (mcp.readGPIOAB() & (1 << 8)); halI2CUnlock(); return v; }
+bool halReadEncB()    { halI2CLock(); bool v = (mcp.readGPIOAB() & (1 << 9)); halI2CUnlock(); return v; }
 bool halReadEncBtn()  {
     static bool last = true;
     static uint32_t lastMs = 0;
 
+    halI2CLock();
     uint16_t gpio = mcp.readGPIOAB();
+    halI2CUnlock();
     bool cur = gpio & (1 << 7); // HIGH = отпущена
 
     uint32_t now = millis();
@@ -182,4 +208,4 @@ bool halReadEncBtn()  {
     return clicked;
 }
 
-bool halReadBackBtn() { return (mcp.readGPIOAB() & (1 << 5)) == 0; }
+bool halReadBackBtn() { halI2CLock(); bool v = (mcp.readGPIOAB() & (1 << 5)) == 0; halI2CUnlock(); return v; }

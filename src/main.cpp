@@ -1,4 +1,4 @@
-#include <Arduino.h>
+﻿#include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <Preferences.h>
@@ -7,6 +7,7 @@
 #include "driver/rmt.h"
 #include "driver/gpio.h"
 #include "hal.h"
+#include "web_ui.h"
 
 // ================== I2C ==================
 #define I2C_SDA 21
@@ -21,21 +22,21 @@ static const rmt_channel_t RMT_CH[8] = {
 
 static RingbufHandle_t rb[8] = {nullptr};
 static volatile uint16_t pwmWidth[8] = {0};
-static volatile uint32_t pwmStampMs[8] = {0}; // когда обновили
+static volatile uint32_t pwmStampMs[8] = {0}; // РєРѕРіРґР° РѕР±РЅРѕРІРёР»Рё
 
 // ================== UI ==================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 Preferences prefs;
 
 // ================== RULES ==================
-enum ActType { BTS, PCA_OUT, DAC_OUT, REVERSER };
+enum ActType { BTS, PCA_OUT, REVERSER };
 enum Mode    { RELAY, POLARITY_RELAY, ENGINE, BTS_Mode };
 
 struct Rule {
   enum CondKind { ANY, BELOW, ABOVE, BETWEEN } kind = ANY;
   uint16_t aUs = 1500, bUs = 2000;
   ActType type = PCA_OUT;
-  uint8_t targetIndex = 0;   // 0..27
+  uint8_t targetIndex = 0;   // 0..26
   Mode mode = RELAY;
 };
 
@@ -45,8 +46,7 @@ static std::vector<Rule> rules[8];
 // 0..15 -> PCA9685 ch (ENGINE PWM)
 // 16..19 -> BTS 0..3
 // 20..23 -> Relay 0..3
-// 24..26 -> Polarity relay (REVERSE1..3)
-// 27 -> reserve (REVERSE4 отсутствует в MCP карте)
+// 24..26 -> Polarity relay 0..2
 static inline void applyOutputByTarget(
     uint8_t tgt,
     Mode mode,
@@ -89,7 +89,7 @@ static Rule* edit = nullptr;
 static inline int clampi(int v,int lo,int hi){ return v<lo?lo:(v>hi?hi:v); }
 
 static const char* actName(ActType t){
-  switch(t){ case BTS:return "BTS"; case PCA_OUT:return "PCA"; case DAC_OUT:return "PWM"; case REVERSER:return "REV"; }
+  switch(t){ case BTS:return "BTS"; case PCA_OUT:return "PCA"; case REVERSER:return "REV"; }
   return "?";
 }
 static const char* condName(Rule::CondKind c){
@@ -97,7 +97,7 @@ static const char* condName(Rule::CondKind c){
   return "?";
 }
 static const char* modeName(Mode m){
-  switch(m){ case RELAY:return "Реле"; case POLARITY_RELAY:return "Полярность"; case ENGINE:return "Шим вывод"; case BTS_Mode:return "BTS"; }
+  switch(m){ case RELAY:return "Реле"; case POLARITY_RELAY:return "Полярность"; case ENGINE:return "ШИМ вывод"; case BTS_Mode:return "BTS"; }
   return "?";
 }
 
@@ -191,10 +191,10 @@ static void initRmtOne(int idx){
   cfg.clk_div = 80; // 1us tick
   cfg.rx_config.filter_en = true;
   cfg.rx_config.filter_ticks_thresh = 10;
-  cfg.rx_config.idle_threshold = 2500; // ключевое для RC: фиксируем импульсы ~1000-2000us
+  cfg.rx_config.idle_threshold = 2500; // РєР»СЋС‡РµРІРѕРµ РґР»СЏ RC: С„РёРєСЃРёСЂСѓРµРј РёРјРїСѓР»СЊСЃС‹ ~1000-2000us
 
   ESP_ERROR_CHECK(rmt_config(&cfg));
-  // ringbuffer size: НЕ огромный, а достаточно + мы дренируем
+  // ringbuffer size: РќР• РѕРіСЂРѕРјРЅС‹Р№, Р° РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ + РјС‹ РґСЂРµРЅРёСЂСѓРµРј
   ESP_ERROR_CHECK(rmt_driver_install(cfg.channel, 2048, 0));
   ESP_ERROR_CHECK(rmt_get_ringbuf_handle(cfg.channel, &rb[idx]));
   ESP_ERROR_CHECK(rmt_rx_start(cfg.channel, true));
@@ -206,7 +206,7 @@ static void initPWM(){
 }
 
 // ================== TASK: PWM ==================
-// Проф. решение от BUFFER FULL: на каждом канале "дренируем" очередь до пусто
+// РџСЂРѕС„. СЂРµС€РµРЅРёРµ РѕС‚ BUFFER FULL: РЅР° РєР°Р¶РґРѕРј РєР°РЅР°Р»Рµ "РґСЂРµРЅРёСЂСѓРµРј" РѕС‡РµСЂРµРґСЊ РґРѕ РїСѓСЃС‚Рѕ
 void pwmTask(void*){
   Serial.println("[PWM] pwmTask started");
   for(;;){
@@ -216,10 +216,10 @@ void pwmTask(void*){
       size_t sz=0;
       rmt_item32_t* items=nullptr;
 
-      // дренируем: пока есть данные — читаем
+      // РґСЂРµРЅРёСЂСѓРµРј: РїРѕРєР° РµСЃС‚СЊ РґР°РЅРЅС‹Рµ вЂ” С‡РёС‚Р°РµРј
       while((items = (rmt_item32_t*)xRingbufferReceive(rb[ch], &sz, 0)) != nullptr){
         int count = sz / sizeof(rmt_item32_t);
-        // берём последний валидный импульс из пачки
+        // Р±РµСЂС‘Рј РїРѕСЃР»РµРґРЅРёР№ РІР°Р»РёРґРЅС‹Р№ РёРјРїСѓР»СЊСЃ РёР· РїР°С‡РєРё
         for(int i=0;i<count;i++){
           uint16_t us=0;
           if(items[i].level0==1) us = items[i].duration0;
@@ -238,64 +238,148 @@ void pwmTask(void*){
 }
 
 // ================== TASK: RULE ==================
-void ruleTask(void*){
-  Serial.println("[RULE] ruleTask started");
+void logicTask(void*){
+  Serial.println("[LOGIC] logicTask started");
   for(;;){
     uint32_t now = millis();
+    OutputState next[32];
+
+    for(int i=0;i<32;i++){
+      next[i].active = false;
+      next[i].v01 = 0.0f;
+      next[i].vs = 0.0f;
+    }
 
     for(int ch=0; ch<8; ch++){
       uint16_t us = pwmWidth[ch];
-      // если давно не обновлялся — считаем "нет сигнала"
-      if(now - pwmStampMs[ch] > 100) continue;
+      // timeout -> no signal on this input channel
+      if(now - pwmStampMs[ch] > 120) continue;
       if(us < 900 || us > 2100) continue;
 
       float v01 = pwm_to_01(us);
       float vs  = pwm_to_signed(us);
 
       for(auto &r : rules[ch]){
-        bool ok = condOk(r, us);
         uint8_t out = r.targetIndex;
+        if(out >= 32 || !condOk(r, us)) continue;
 
-        if(out >= 32) continue;
+        // Last matching rule wins for the same output.
+        next[out].active = true;
 
-        if(!ok){
-          outState[out].active = false;
-          outState[out].v01 = 0;
-          outState[out].vs  = 0;
-          continue;
+        // Primary behavior by output target group.
+        if(out <= 15){
+          next[out].v01 = v01;      // PCA 0..1
+          next[out].vs  = 0.0f;
+        } else if(out <= 19){
+          next[out].v01 = 1.0f;
+          next[out].vs  = vs;       // BTS -1..1
+        } else if(out <= 23){
+          next[out].v01 = 1.0f;     // Relay ON when condition is true
+          next[out].vs  = 0.0f;
+        } else if(out <= 26){
+          next[out].v01 = 1.0f;
+          next[out].vs  = vs;       // Polarity by sign
         }
 
-        // cond=true -> формируем значение по mode
-        outState[out].active = true;
-
+        // Optional mode override (kept for compatibility with saved rules).
         switch(r.mode){
           case RELAY:
-            outState[out].v01 = 1.0f;
-            outState[out].vs  = 0.0f;
+            next[out].v01 = 1.0f;
+            next[out].vs  = 0.0f;
             break;
-
           case POLARITY_RELAY:
-            // направление по знаку стика
-            outState[out].v01 = 1.0f;
-            outState[out].vs  = vs;
+            next[out].v01 = 1.0f;
+            next[out].vs  = vs;
             break;
-
           case ENGINE:
-            outState[out].v01 = v01;   // 0..1 на PCA9685
-            outState[out].vs  = 0.0f;
+            next[out].v01 = v01;
+            next[out].vs  = 0.0f;
             break;
-
           case BTS_Mode:
-            // -1..1 на BTS
-            outState[out].v01 = 1.0f;
-            outState[out].vs  = vs;
+            next[out].v01 = 1.0f;
+            next[out].vs  = vs;
             break;
         }
       }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10)); // 100Гц хватает
+    for(int i=0;i<32;i++){
+      outState[i].active = next[i].active;
+      outState[i].v01    = next[i].v01;
+      outState[i].vs     = next[i].vs;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
+}
+
+String buildRulesJson() {
+  DynamicJsonDocument doc(4096);
+  JsonArray arr = doc.createNestedArray("rules");
+  for (int ch = 0; ch < 8; ch++) {
+    JsonArray a = arr.createNestedArray();
+    for (auto &r : rules[ch]) {
+      JsonObject o = a.createNestedObject();
+      o["type"] = (int)r.type;
+      o["cond"] = (int)r.kind;
+      o["a"] = r.aUs;
+      o["b"] = r.bUs;
+      o["tgt"] = r.targetIndex;
+      o["mode"] = (int)r.mode;
+    }
+  }
+  String s;
+  serializeJsonPretty(doc, s);
+  return s;
+}
+
+bool applyRulesJson(const String& s) {
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, s)) return false;
+  JsonArray arr = doc["rules"];
+  if (arr.isNull()) return false;
+
+  for (int ch = 0; ch < 8; ch++) {
+    rules[ch].clear();
+    if (ch >= (int)arr.size()) continue;
+
+    JsonArray one = arr[ch].as<JsonArray>();
+    for (JsonObject o : one) {
+      Rule r;
+      r.type = (ActType)clampi((int)o["type"], 0, 2);
+      r.kind = (Rule::CondKind)clampi((int)o["cond"], 0, 3);
+      r.aUs = (uint16_t)clampi((int)o["a"], 900, 2100);
+      r.bUs = (uint16_t)clampi((int)o["b"], 900, 2500);
+      r.targetIndex = (uint8_t)clampi((int)o["tgt"], 0, 26);
+      r.mode = (Mode)clampi((int)o["mode"], 0, 3);
+      rules[ch].push_back(r);
+    }
+  }
+  return true;
+}
+
+String buildStatusJson() {
+  DynamicJsonDocument doc(4096);
+  JsonArray in = doc.createNestedArray("inputs");
+  for (int i = 0; i < 8; i++) {
+    JsonObject o = in.createNestedObject();
+    o["ch"] = i;
+    o["us"] = pwmWidth[i];
+    o["ageMs"] = (uint32_t)(millis() - pwmStampMs[i]);
+  }
+
+  JsonArray out = doc.createNestedArray("outputs");
+  for (int i = 0; i < 27; i++) {
+    JsonObject o = out.createNestedObject();
+    o["idx"] = i;
+    o["active"] = outState[i].active;
+    o["v01"] = outState[i].v01;
+    o["vs"] = outState[i].vs;
+  }
+
+  String s;
+  serializeJsonPretty(doc, s);
+  return s;
 }
 
 // ================== TASK: OUTPUT ==================
@@ -345,27 +429,7 @@ void outputTask(void *p)
 
 // ================== SIMPLE MCP ENCODER (polling) ==================
  
-static bool encBtnClick()
-{
-    static bool last = true;        // true = отпущена
-    static uint32_t lastMs = 0;
-
-    bool cur = halReadEncBtn();     // true = нажата
-    uint32_t now = millis();
-
-    bool click = false;
-
-    // фронт нажатия
-    if (last && !cur) {
-        if (now - lastMs > 180) {   // debounce
-            click = true;
-            lastMs = now;
-        }
-    }
-
-    last = cur;
-    return click;
-}
+static inline bool encBtnClick(){ return halReadEncBtn(); }
 
 
 // ================== DRAW ==================
@@ -381,13 +445,15 @@ u8g2.setFont(u8g2_font_6x12_t_cyrillic);
     u8g2.drawUTF8(4,y,m[i]);
     if(i==mainIdx) u8g2.setDrawColor(1);
   }
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
-// более аккуратный Status: шкала + число сверху
+// Р±РѕР»РµРµ Р°РєРєСѓСЂР°С‚РЅС‹Р№ Status: С€РєР°Р»Р° + С‡РёСЃР»Рѕ СЃРІРµСЂС…Сѓ
 void drawStatus(){
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.setFont(u8g2_font_5x8_t_cyrillic);
 
   const int barW=14, gap=2;
   const int topY=10;
@@ -404,32 +470,36 @@ void drawStatus(){
       h = clampi(h,0,barMaxH);
     }
 
-    // число сверху
+    // С‡РёСЃР»Рѕ СЃРІРµСЂС…Сѓ
     char t[8];
     if(us>=900 && us<=2100) snprintf(t,sizeof(t),"%u",us);
     else snprintf(t,sizeof(t),"---");
     u8g2.drawUTF8(x, topY, t);
 
-    // бар снизу
+    // Р±Р°СЂ СЃРЅРёР·Сѓ
     u8g2.drawFrame(x, barBase-barMaxH, barW, barMaxH);
     u8g2.drawBox(x+1, barBase-h, barW-2, h);
   }
 
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
 void drawCh(){
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x12_tr);
+  u8g2.setFont(u8g2_font_6x12_t_cyrillic);
   for(int i=0;i<8;i++){
     char b[24];
-    snprintf(b,sizeof(b),"Канал%d (%d)", i+1, (int)rules[i].size());
+    snprintf(b,sizeof(b),"Канал %d (%d)", i+1, (int)rules[i].size());
     int y=20+i*12;
     if(i==chIdx){ u8g2.drawBox(0,y-10,128,12); u8g2.setDrawColor(0); }
     u8g2.drawUTF8(4,y,b);
     if(i==chIdx) u8g2.setDrawColor(1);
   }
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
 void drawRulesList(){
@@ -449,10 +519,12 @@ u8g2.setFont(u8g2_font_6x12_t_cyrillic);
   if(ruleIdx==n){ u8g2.drawBox(0,y-7,128,9); u8g2.setDrawColor(0); }
   u8g2.drawUTF8(2,y,"+Добавить");
   if(ruleIdx==n) u8g2.setDrawColor(1);
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
-// В EDIT показываем PWM выбранного входного канала (selCh) в правом верхнем углу
+// Р’ EDIT РїРѕРєР°Р·С‹РІР°РµРј PWM РІС‹Р±СЂР°РЅРЅРѕРіРѕ РІС…РѕРґРЅРѕРіРѕ РєР°РЅР°Р»Р° (selCh) РІ РїСЂР°РІРѕРј РІРµСЂС…РЅРµРј СѓРіР»Сѓ
 void drawEdit(){
   if(!edit) return;
 
@@ -462,8 +534,8 @@ void drawEdit(){
   // PWM in corner
  /* char p[12];
   uint16_t us = pwmWidth[selCh];
-  if(us>=900 && us<=2100) snprintf(p,sizeof(p),"Канал%d:%u", selCh+1, us);
-  else snprintf(p,sizeof(p),"Канал%d:---", selCh+1);
+  if(us>=900 && us<=2100) snprintf(p,sizeof(p),"РљР°РЅР°Р»%d:%u", selCh+1, us);
+  else snprintf(p,sizeof(p),"РљР°РЅР°Р»%d:---", selCh+1);
   int tw = u8g2.getStrWidth(p);
   u8g2.drawUTF8(60-tw, 12, p);
 */
@@ -529,7 +601,9 @@ if(us>=900 && us<=2100)
   if(fieldIdx==5) u8g2.drawBox(0,53,128,10);
   u8g2.setDrawColor(fieldIdx==5?0:1); u8g2.drawUTF8(2,60,line); u8g2.setDrawColor(1);
 
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
 // ================== UI TASK ==================
@@ -546,8 +620,8 @@ void uiTask(void*){
   Serial.println("[UI] uiTask started");
 
   for(;;){
-int d = halReadNavStep();  // ← 1 шаг = 1 щелчок
-  // 🔍 DEBUG: смотрим, есть ли шаги
+int d = halReadNavStep();  // в†ђ 1 С€Р°Рі = 1 С‰РµР»С‡РѕРє
+  // рџ”Ќ DEBUG: СЃРјРѕС‚СЂРёРј, РµСЃС‚СЊ Р»Рё С€Р°РіРё
     if(d != 0){
       Serial.printf("ENC STEP = %d\n", d);
     }
@@ -584,6 +658,9 @@ if(back)  Serial.println("BACK");
       if(click){
         if(ruleIdx==n){
           rules[selCh].push_back(Rule{});
+          edit=&rules[selCh].back();
+          fieldIdx=0;
+          menu=EDIT_RULE;
         } else {
           edit=&rules[selCh][ruleIdx];
           fieldIdx=0;
@@ -595,12 +672,12 @@ if(back)  Serial.println("BACK");
       if(edit && d!=0){
         int step = (d>0)?10:-10;
         switch(fieldIdx){
-          case 0: edit->type = (ActType)((((int)edit->type)+(d>0?1:3))%4); break;
+          case 0: edit->type = (ActType)((((int)edit->type)+(d>0?1:2))%3); break;
           case 1: edit->mode = (Mode)((((int)edit->mode)+(d>0?1:3))%4); break;
           case 2: edit->kind = (Rule::CondKind)((((int)edit->kind)+(d>0?1:3))%4); break;
           case 3: edit->aUs  = clampi((int)edit->aUs + step, 900, 2100); break;
           case 4: edit->bUs  = clampi((int)edit->bUs + step, 900, 2500); break;
-          case 5: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 27); break;
+          case 5: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
         }
       }
       if(click){
@@ -620,9 +697,11 @@ if(back)  Serial.println("BACK");
       case EDIT_RULE: drawEdit(); break;
       case SAVED:
         u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_6x12_tr);
-        u8g2.drawUTF8(44, 30, "Сохранено!");
+        u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+        u8g2.drawUTF8(30, 30, "Сохранено!");
+        halI2CLock();
         u8g2.sendBuffer();
+        halI2CUnlock();
         break;
     }
 
@@ -656,16 +735,30 @@ void setup(){
 
   // tasks
   xTaskCreatePinnedToCore(pwmTask,   "PWM",  4096, nullptr, 3, nullptr, 0);
-  xTaskCreatePinnedToCore(ruleTask,  "RULE", 4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(logicTask, "LOGIC", 4096, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(outputTask,"OUT",  4096, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(uiTask,    "UI",   4096, nullptr, 1, nullptr, 1);
 
+  webUiBegin(
+    "ESP32-RC-CTRL",
+    "12345678",
+    buildStatusJson,
+    buildRulesJson,
+    applyRulesJson,
+    saveRules,
+    loadRules
+  );
+
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x12_tr);
+  u8g2.setFont(u8g2_font_6x12_t_cyrillic);
   u8g2.drawUTF8(10, 30, "Готово!");
+  halI2CLock();
   u8g2.sendBuffer();
+  halI2CUnlock();
 }
 
 void loop(){
   vTaskDelay(pdMS_TO_TICKS(1000));
 }
+
+

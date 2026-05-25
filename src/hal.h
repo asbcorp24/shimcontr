@@ -1,6 +1,10 @@
 #pragma once
 #include <Arduino.h>
 
+// ===================== I2C BUS LOCK =====================
+void halI2CLock();
+void halI2CUnlock();
+
 // ===================== INIT =====================
 void halInit();
 int halReadNavStep();
