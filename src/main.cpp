@@ -27,6 +27,8 @@ static volatile uint32_t pwmStampMs[8] = {0}; // РєРѕРіРґР° РѕР±Р
 // ================== UI ==================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 Preferences prefs;
+static bool wifiEnabled = true;
+static char savedMsg[24] = "Сохранено!";
 
 // ================== RULES ==================
 enum ActType { BTS, PCA_OUT, REVERSER };
@@ -379,6 +381,16 @@ void logicTask(void*){
   }
 }
 
+void saveWifiPref() {
+  prefs.putBool("wifi_en", wifiEnabled);
+  Serial.printf("[NVS] wifi_en=%d\n", wifiEnabled ? 1 : 0);
+}
+
+void loadWifiPref() {
+  wifiEnabled = prefs.getBool("wifi_en", true);
+  Serial.printf("[NVS] wifi_en loaded=%d\n", wifiEnabled ? 1 : 0);
+}
+
 String buildRulesJson() {
   DynamicJsonDocument doc(8192);
   JsonArray arr = doc.createNestedArray("rules");
@@ -642,11 +654,14 @@ static inline bool encBtnClick(){ return halReadEncBtn(); }
 // ================== DRAW ==================
 void drawMain(){
   u8g2.clearBuffer();
-u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-  const char* m[]={"Статус","Ред. правила","Сохр","Загр"};
-  for(int i=0;i<4;i++){
-    int y=20+i*12;
-    if(i==mainIdx){ u8g2.drawBox(0,y-10,128,12); u8g2.setDrawColor(0); }
+u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+  char wifiLine[24];
+  snprintf(wifiLine, sizeof(wifiLine), "WiFi: %s", wifiEnabled ? "Вкл" : "Выкл");
+  const char* m[]={"Статус","Ред. правила","Сохр","Загр",nullptr};
+  m[4] = wifiLine;
+  for(int i=0;i<5;i++){
+    int y=12+i*10;
+    if(i==mainIdx){ u8g2.drawBox(0,y-8,128,10); u8g2.setDrawColor(0); }
 
 
     u8g2.drawUTF8(4,y,m[i]);
@@ -852,12 +867,19 @@ if(back)  Serial.println("BACK");
 
     if(menu==MAIN){
       if(d>0) mainIdx++; else if(d<0) mainIdx--;
-      mainIdx=clampi(mainIdx,0,3);
+      mainIdx=clampi(mainIdx,0,4);
       if(click){
         if(mainIdx==0) menu=STATUSS;
         else if(mainIdx==1) menu=CHSEL;
-        else if(mainIdx==2){ saveRules(); menu=SAVED; }
-        else if(mainIdx==3){ loadRules(); menu=SAVED; }
+        else if(mainIdx==2){ saveRules(); snprintf(savedMsg, sizeof(savedMsg), "Сохранено!"); menu=SAVED; }
+        else if(mainIdx==3){ loadRules(); snprintf(savedMsg, sizeof(savedMsg), "Загружено!"); menu=SAVED; }
+        else if(mainIdx==4){
+          wifiEnabled = !wifiEnabled;
+          saveWifiPref();
+          webUiSetEnabled(wifiEnabled);
+          snprintf(savedMsg, sizeof(savedMsg), "WiFi: %s", wifiEnabled ? "Вкл" : "Выкл");
+          menu=SAVED;
+        }
       }
     } else if(menu==STATUSS){
       if(click || back) menu=MAIN;
@@ -921,7 +943,7 @@ if(back)  Serial.println("BACK");
       case SAVED:
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-        u8g2.drawUTF8(30, 30, "Сохранено!");
+        u8g2.drawUTF8(18, 30, savedMsg);
         halI2CLock();
         u8g2.sendBuffer();
         halI2CUnlock();
@@ -945,6 +967,7 @@ void setup(){
   initPWM();      // RMT inputs
 
   prefs.begin("cfg", false);
+  loadWifiPref();
   loadRules();
 
   // demo rule if empty
@@ -966,6 +989,7 @@ void setup(){
   webUiBegin(
     "ESP32-RC-CTRL",
     "12345678",
+    wifiEnabled,
     buildStatusJson,
     buildRulesJson,
     applyRulesJson,

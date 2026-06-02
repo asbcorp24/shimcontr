@@ -9,6 +9,7 @@ typedef void (*WebUiActionFn)();
 void webUiBegin(
   const char* apSsid,
   const char* apPass,
+  bool enabled,
   WebUiGetJsonFn getStatusJson,
   WebUiGetJsonFn getRulesJson,
   WebUiSetJsonFn setRulesJson,
@@ -16,3 +17,4 @@ void webUiBegin(
   WebUiActionFn loadRulesFn
 );
 
+void webUiSetEnabled(bool enabled);
