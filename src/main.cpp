@@ -34,8 +34,11 @@ enum Mode    { RELAY, POLARITY_RELAY, ENGINE, BTS_Mode };
 
 struct Rule {
   enum CondKind { ANY, BELOW, ABOVE, BETWEEN } kind = ANY;
+  enum BtsKind { BTS_FIXED, BTS_RANGE } btsKind = BTS_FIXED;
   uint16_t aUs = 1500, bUs = 2000;
   uint16_t outAUs = 1000, outBUs = 2000;
+  int16_t btsPct = 0;
+  int16_t btsMinPct = -100, btsMaxPct = 100;
   ActType type = PCA_OUT;
   uint8_t targetIndex = 0;   // 0..26
   Mode mode = RELAY;
@@ -117,6 +120,10 @@ static const char* modeName(Mode m){
   switch(m){ case RELAY:return "Реле"; case POLARITY_RELAY:return "Полярность"; case ENGINE:return "ШИМ вывод"; case BTS_Mode:return "BTS"; }
   return "?";
 }
+static const char* btsKindName(Rule::BtsKind k){
+  switch(k){ case Rule::BTS_FIXED:return "Фикс"; case Rule::BTS_RANGE:return "Диапазон"; }
+  return "?";
+}
 
 static inline bool condOk(const Rule& r, uint16_t pwm){
   switch(r.kind){
@@ -143,6 +150,22 @@ static inline float map_range_clamped(float x, float inA, float inB, float outA,
   t = constrain(t, 0.0f, 1.0f);
   return outA + (outB - outA) * t;
 }
+static inline float compute_bts_value(uint16_t us, const Rule& r){
+  switch (r.kind) {
+    case Rule::ABOVE:
+      return constrain(map_range_clamped((float)us, (float)r.aUs, 2000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
+    case Rule::BELOW:
+      return constrain(map_range_clamped((float)us, (float)r.aUs, 1000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
+    case Rule::BETWEEN:
+      return constrain(map_range_clamped((float)us, (float)r.aUs, (float)r.bUs, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
+    case Rule::ANY:
+    default:
+      return constrain(map_range_clamped((float)us, 1000.0f, 2000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
+  }
+
+  // Fixed BTS mode is temporarily disabled.
+  // return constrain((float)r.btsPct / 100.0f, -1.0f, 1.0f);
+}
 
 // ================== NVS SAVE/LOAD ==================
 void saveRules() {
@@ -158,6 +181,10 @@ void saveRules() {
       o["b"]=r.bUs;
       o["outA"]=r.outAUs;
       o["outB"]=r.outBUs;
+      o["btsKind"]=(int)r.btsKind;
+      o["bts"]=r.btsPct;
+      o["btsMin"]=r.btsMinPct;
+      o["btsMax"]=r.btsMaxPct;
       o["tgt"]=r.targetIndex;
       o["mode"]=(int)r.mode;
     }
@@ -185,10 +212,14 @@ void loadRules() {
       Rule r;
       r.type = (ActType)(int)o["type"];
       r.kind = (Rule::CondKind)(int)o["cond"];
+      r.btsKind = o["btsKind"].isNull() ? Rule::BTS_FIXED : (Rule::BtsKind)(int)o["btsKind"];
       r.aUs  = (uint16_t)(int)o["a"];
       r.bUs  = (uint16_t)(int)o["b"];
       r.outAUs = o["outA"].isNull() ? 1000 : (uint16_t)(int)o["outA"];
       r.outBUs = o["outB"].isNull() ? 2000 : (uint16_t)(int)o["outB"];
+      r.btsPct = o["bts"].isNull() ? 0 : (int16_t)(int)o["bts"];
+      r.btsMinPct = o["btsMin"].isNull() ? -100 : (int16_t)(int)o["btsMin"];
+      r.btsMaxPct = o["btsMax"].isNull() ? 100 : (int16_t)(int)o["btsMax"];
       r.targetIndex = (uint8_t)(int)o["tgt"];
       r.mode = (Mode)(int)o["mode"];
       rules[ch].push_back(r);
@@ -300,7 +331,7 @@ void logicTask(void*){
           next[out].vs  = 0.0f;
         } else if(out <= 19){
           next[out].v01 = 1.0f;
-          next[out].vs  = vs;       // BTS -1..1
+          next[out].vs  = compute_bts_value(us, r);
         } else if(out <= 23){
           next[out].v01 = 1.0f;     // Relay ON when condition is true
           next[out].vs  = 0.0f;
@@ -330,7 +361,9 @@ void logicTask(void*){
             break;
           case BTS_Mode:
             next[out].v01 = 1.0f;
-            next[out].vs  = vs;
+            if(out <= 19){
+              next[out].vs = compute_bts_value(us, r);
+            } else next[out].vs = vs;
             break;
         }
       }
@@ -359,6 +392,10 @@ String buildRulesJson() {
       o["b"] = r.bUs;
       o["outA"] = r.outAUs;
       o["outB"] = r.outBUs;
+      o["btsKind"] = (int)r.btsKind;
+      o["bts"] = r.btsPct;
+      o["btsMin"] = r.btsMinPct;
+      o["btsMax"] = r.btsMaxPct;
       o["tgt"] = r.targetIndex;
       o["mode"] = (int)r.mode;
     }
@@ -383,10 +420,14 @@ bool applyRulesJson(const String& s) {
       Rule r;
       r.type = (ActType)clampi((int)o["type"], 0, 2);
       r.kind = (Rule::CondKind)clampi((int)o["cond"], 0, 3);
+      r.btsKind = o["btsKind"].isNull() ? Rule::BTS_FIXED : (Rule::BtsKind)clampi((int)o["btsKind"], 0, 1);
       r.aUs = (uint16_t)clampi((int)o["a"], 900, 2100);
       r.bUs = (uint16_t)clampi((int)o["b"], 900, 2500);
       r.outAUs = o["outA"].isNull() ? 1000 : (uint16_t)clampi((int)o["outA"], 0, 4095);
       r.outBUs = o["outB"].isNull() ? 2000 : (uint16_t)clampi((int)o["outB"], 0, 4095);
+      r.btsPct = o["bts"].isNull() ? 0 : (int16_t)clampi((int)o["bts"], -100, 100);
+      r.btsMinPct = o["btsMin"].isNull() ? -100 : (int16_t)clampi((int)o["btsMin"], -100, 100);
+      r.btsMaxPct = o["btsMax"].isNull() ? 100 : (int16_t)clampi((int)o["btsMax"], -100, 100);
       r.targetIndex = (uint8_t)clampi((int)o["tgt"], 0, 26);
       r.mode = (Mode)clampi((int)o["mode"], 0, 3);
       rules[ch].push_back(r);
@@ -746,9 +787,13 @@ if(us>=900 && us<=2100)
     char m[20];
     snprintf(m,sizeof(m),"P:%4u", (unsigned)lroundf(mappedOutUs));
     u8g2.drawUTF8(88, 20, m);
+  } else if(edit->targetIndex >= 16 && edit->targetIndex <= 19){
+    char m[20];
+    snprintf(m,sizeof(m),"B:%d..%d", edit->btsMinPct, edit->btsMaxPct);
+    u8g2.drawUTF8(74, 20, m);
   }
 
-  const int totalFields = 8;
+  const int totalFields = 10;
   const int visibleFields = 4;
   int startField = clampi(fieldIdx - 1, 0, totalFields - visibleFields);
   char line[40];
@@ -764,7 +809,9 @@ if(us>=900 && us<=2100)
       case 4: snprintf(line,sizeof(line),"B: %u", edit->bUs); break;
       case 5: snprintf(line,sizeof(line),"OutA: %u", edit->outAUs); break;
       case 6: snprintf(line,sizeof(line),"OutB: %u", edit->outBUs); break;
-      case 7: snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex); break;
+      case 7: snprintf(line,sizeof(line),"BTSmin: %d", edit->btsMinPct); break;
+      case 8: snprintf(line,sizeof(line),"BTSmax: %d", edit->btsMaxPct); break;
+      case 9: snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex); break;
       default: line[0]=0; break;
     }
     if(fieldIdx==f) u8g2.drawBox(0,y-7,128,9);
@@ -851,11 +898,13 @@ if(back)  Serial.println("BACK");
           case 4: edit->bUs  = clampi((int)edit->bUs + step, 900, 2500); break;
           case 5: edit->outAUs = clampi((int)edit->outAUs + step, 0, 4095); break;
           case 6: edit->outBUs = clampi((int)edit->outBUs + step, 0, 4095); break;
-          case 7: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
+          case 7: edit->btsMinPct = clampi((int)edit->btsMinPct + (d>0?5:-5), -100, 100); break;
+          case 8: edit->btsMaxPct = clampi((int)edit->btsMaxPct + (d>0?5:-5), -100, 100); break;
+          case 9: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
         }
       }
       if(click){
-        fieldIdx++; if(fieldIdx>7) fieldIdx=0;
+        fieldIdx++; if(fieldIdx>9) fieldIdx=0;
       }
       if(back) menu=RULES_LIST;
     } else if(menu==SAVED){

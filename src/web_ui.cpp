@@ -60,7 +60,7 @@ static const char* INDEX_HTML = R"HTML(
       </div>
       <table style="margin-top:10px">
         <thead>
-          <tr><th>#</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>OutA</th><th>OutB</th><th>Цель</th><th></th></tr>
+          <tr><th>#</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>OutA</th><th>OutB</th><th>BTSmin</th><th>BTSmax</th><th>Цель</th><th></th></tr>
         </thead>
         <tbody id="rulesBody"></tbody>
       </table>
@@ -134,6 +134,10 @@ function modeForTarget(t){
 function isPcaTarget(t){
   return Number(t) <= 15;
 }
+function isBtsTarget(t){
+  t = Number(t);
+  return t >= 16 && t <= 19;
+}
 function mapRangeClamped(x, inA, inB, outA, outB){
   if (Math.abs(inB - inA) < 0.001) return outA;
   let t = (x - inA) / (inB - inA);
@@ -148,14 +152,27 @@ function updatePcaHints(){
   const ch = Number(document.getElementById('channelSel').value||0);
   const arr = cfg.rules[ch] || [];
   arr.forEach((r,idx)=>{
-    if (!isPcaTarget(r.tgt)) return;
+    const pca = isPcaTarget(r.tgt);
+    const bts = isBtsTarget(r.tgt);
+    if (!pca && !bts) return;
     const el = document.getElementById(`hint-${ch}-${idx}`);
     if (!el) return;
     const curUs = currentInputUs(ch);
-    let hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
-    if (curUs !== null && curUs >= 900 && curUs <= 2100) {
-      const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
-      hintText += ` | ${curUs} -> ${mapped}`;
+    let hintText = "";
+    if (pca) {
+      hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
+      if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+        const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
+        hintText += ` | ${curUs} -> ${mapped}`;
+      }
+    } else if (bts) {
+      hintText = `A..B ${r.a}..${r.b} -> BTS ${r.btsMin}..${r.btsMax}%`;
+      if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+        const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.btsMin), Number(r.btsMax)));
+        hintText += ` | ${curUs} -> ${mapped}%`;
+      }
+    } else if (bts) {
+      hintText = `A..B ${r.a}..${r.b} -> BTS ${r.btsMin}..${r.btsMax}%`;
     }
     el.textContent = hintText;
   });
@@ -182,6 +199,8 @@ function sanitizeRule(r){
     b: Math.min(2500, Math.max(900, Number(r.b||2000))),
     outA: Math.min(4095, Math.max(0, Number(r.outA||1000))),
     outB: Math.min(4095, Math.max(0, Number(r.outB||2000))),
+    btsMin: Math.min(100, Math.max(-100, Number(r.btsMin||-100))),
+    btsMax: Math.min(100, Math.max(-100, Number(r.btsMax||100))),
     tgt: tgt,
     mode: safeMode
   };
@@ -194,6 +213,7 @@ function renderRules(){
   const arr = cfg.rules[ch] || [];
   arr.forEach((r,idx)=>{
     const pca = isPcaTarget(r.tgt);
+    const bts = isBtsTarget(r.tgt);
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${idx+1}</td>
@@ -203,6 +223,8 @@ function renderRules(){
       <td><input type="number" min="900" max="2500" value="${r.b}" onchange="upd(${ch},${idx},'b',this.value)"></td>
       <td><input type="number" min="0" max="4095" value="${r.outA}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outA',this.value)"></td>
       <td><input type="number" min="0" max="4095" value="${r.outB}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outB',this.value)"></td>
+      <td><input type="number" min="-100" max="100" value="${r.btsMin}" ${bts ? "" : "disabled"} onchange="upd(${ch},${idx},'btsMin',this.value)"></td>
+      <td><input type="number" min="-100" max="100" value="${r.btsMax}" ${bts ? "" : "disabled"} onchange="upd(${ch},${idx},'btsMax',this.value)"></td>
       <td><select onchange="upd(${ch},${idx},'tgt',this.value)">${targetOptions(r.tgt)}</select></td>
       <td>
         <button class="gray" onclick="moveRule(${ch},${idx},-1)">↑</button>
@@ -210,15 +232,24 @@ function renderRules(){
         <button class="red" onclick="delRule(${ch},${idx})">Удалить</button>
       </td>`;
     body.appendChild(tr);
-    if (pca) {
+    if (pca || bts) {
       const hint = document.createElement('tr');
       const curUs = currentInputUs(ch);
-      let hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
-      if (curUs !== null && curUs >= 900 && curUs <= 2100) {
-        const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
-        hintText += ` | ${curUs} -> ${mapped}`;
+      let hintText = "";
+      if (pca) {
+        hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
+        if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+          const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
+          hintText += ` | ${curUs} -> ${mapped}`;
+        }
+      } else if (bts) {
+        hintText = `A..B ${r.a}..${r.b} -> BTS ${r.btsMin}..${r.btsMax}%`;
+        if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+          const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.btsMin), Number(r.btsMax)));
+          hintText += ` | ${curUs} -> ${mapped}%`;
+        }
       }
-      hint.innerHTML = `<td id="hint-${ch}-${idx}" colspan="9" style="color:#475569;font-size:12px;padding-top:0">${hintText}</td>`;
+      hint.innerHTML = `<td id="hint-${ch}-${idx}" colspan="11" style="color:#475569;font-size:12px;padding-top:0">${hintText}</td>`;
       body.appendChild(hint);
     }
   });
@@ -236,7 +267,7 @@ function upd(ch,idx,key,val){
 
 function addRule(){
   const ch = Number(document.getElementById('channelSel').value||0);
-  cfg.rules[ch].push({cond:0, a:1500, b:2000, outA:1000, outB:2000, tgt:0, mode:2});
+  cfg.rules[ch].push({cond:0, a:1500, b:2000, outA:1000, outB:2000, btsMin:-100, btsMax:100, tgt:0, mode:2});
   renderRules();
 }
 
@@ -377,6 +408,7 @@ static const char* HELP_HTML = R"HTML(
       <p><b>Условие (cond):</b> <code>0 ANY</code>, <code>1 Меньше A</code>, <code>2 Больше A</code>, <code>3 Между A и B</code>.</p>
       <p><b>A/B:</b> входной диапазон PWM в микросекундах. Для PCA именно диапазон <code>A..B</code> будет растягиваться или сжиматься.</p>
       <p><b>OutA/OutB:</b> выходной диапазон для PCA. Пример: вход <code>1200..1600</code> можно растянуть в выход <code>1000..2000</code>.</p>
+      <p><b>BTSmin/BTSmax:</b> диапазон скорости для BTS. Входной диапазон переводится в скорость от <code>BTSmin</code> до <code>BTSmax</code>.</p>
       <p><b>Цель (tgt):</b> <code>0..15 PCA</code>, <code>16..19 BTS</code>, <code>20..23 Relay</code>, <code>24..26 Polarity</code>.</p>
     </div>
     <div class="card">
@@ -385,9 +417,10 @@ static const char* HELP_HTML = R"HTML(
       <p>2. Нажмите «Добавить правило».</p>
       <p>3. Выберите условие и диапазон A/B.</p>
       <p>4. Если цель PCA, задайте OutA/OutB.</p>
-      <p>5. Выберите цель (выход).</p>
-      <p>6. Нажмите «Применить на устройство».</p>
-      <p>7. Если результат подходит, нажмите «Сохранить в NVS».</p>
+      <p>5. Если цель BTS, задайте BTSmin/BTSmax.</p>
+      <p>6. Выберите цель (выход).</p>
+      <p>7. Нажмите «Применить на устройство».</p>
+      <p>8. Если результат подходит, нажмите «Сохранить в NVS».</p>
     </div>
     <div class="card">
       <h2>Приоритет</h2>
@@ -397,7 +430,7 @@ static const char* HELP_HTML = R"HTML(
     <div class="card">
       <h2>Примеры</h2>
       <p><b>Реле по верхнему положению стика:</b> cond=Больше, A=1700, tgt=Relay 0..3.</p>
-      <p><b>BTS мотор от стика:</b> cond=ANY, tgt=BTS 0..3.</p>
+      <p><b>BTS мотор по диапазону:</b> cond=ANY, A=1000, B=2000, BTSmin=-100, BTSmax=100, tgt=BTS 0..3.</p>
       <p><b>PCA ШИМ от стика:</b> cond=ANY, A=1000, B=2000, OutA=1000, OutB=2000, tgt=PCA 0..15.</p>
       <p><b>Реле полярности:</b> cond=ANY, tgt=Polarity 0..2.</p>
     </div>
@@ -408,10 +441,15 @@ static const char* HELP_HTML = R"HTML(
       <p><b>3. Relay ON только в центре:</b> cond=Между, A=1450, B=1550, tgt=Relay 2 (22).</p>
       <p><b>4. Relay как кнопка с широким порогом:</b> cond=Больше, A=1600, tgt=Relay 3 (23).</p>
 
-      <p><b>5. BTS прямой привод стиком:</b> cond=ANY, tgt=BTS 0 (16).</p>
-      <p><b>6. BTS только в рабочем окне:</b> cond=Между, A=1200, B=1800, tgt=BTS 1 (17).</p>
-      <p><b>7. BTS мягкая зона старта:</b> cond=Между, A=1400, B=2000, tgt=BTS 2 (18).</p>
-      <p><b>8. BTS реверс только внизу:</b> cond=Меньше, A=1480, tgt=BTS 3 (19).</p>
+      <p><b>5. BTS полный реверс:</b> cond=ANY, A=1000, B=2000, BTSmin=-100, BTSmax=100, tgt=BTS 0 (16).</p>
+      <p><b>6. BTS только вперед:</b> cond=ANY, A=1000, B=2000, BTSmin=0, BTSmax=100, tgt=BTS 1 (17).</p>
+      <p><b>7. BTS только назад:</b> cond=ANY, A=1000, B=2000, BTSmin=-100, BTSmax=0, tgt=BTS 2 (18).</p>
+      <p><b>8. BTS плавно после порога вверх:</b> cond=Больше, A=1700, BTSmin=0, BTSmax=100, tgt=BTS 3 (19).</p>
+      <p><b>9. BTS плавно после порога вниз:</b> cond=Меньше, A=1300, BTSmin=0, BTSmax=-100, tgt=BTS 0 (16).</p>
+      <p><b>10. Три правила вперед/стоп/назад:</b></p>
+      <p>Правило 1: cond=Больше, A=1700, BTSmin=0, BTSmax=100, tgt=BTS 0.</p>
+      <p>Правило 2: cond=Между, A=1400, B=1600, BTSmin=0, BTSmax=0, tgt=BTS 0.</p>
+      <p>Правило 3: cond=Меньше, A=1300, BTSmin=0, BTSmax=-100, tgt=BTS 0.</p>
 
       <p><b>9. PCA полный диапазон 1:1:</b> cond=ANY, A=1000, B=2000, OutA=1000, OutB=2000, tgt=PCA 0.</p>
       <p><b>10. PCA растянуть узкий вход:</b> cond=ANY, A=1200, B=1600, OutA=1000, OutB=2000, tgt=PCA 1.</p>
