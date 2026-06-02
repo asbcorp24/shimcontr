@@ -60,7 +60,7 @@ static const char* INDEX_HTML = R"HTML(
       </div>
       <table style="margin-top:10px">
         <thead>
-          <tr><th>#</th><th>Тип</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>Цель</th><th></th></tr>
+          <tr><th>#</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>OutA</th><th>OutB</th><th>Цель</th><th></th></tr>
         </thead>
         <tbody id="rulesBody"></tbody>
       </table>
@@ -85,7 +85,7 @@ static const char* INDEX_HTML = R"HTML(
         <div style="flex:1;min-width:320px">
           <div class="muted" style="margin-bottom:6px">Выходы</div>
           <table>
-            <thead><tr><th>Выход</th><th>Active</th><th>v01</th><th>vs</th></tr></thead>
+            <thead><tr><th>Выход</th><th>Active</th><th>v01</th><th>vs</th><th>Итог</th></tr></thead>
             <tbody id="outputsBody"></tbody>
           </table>
         </div>
@@ -101,11 +101,12 @@ static const char* INDEX_HTML = R"HTML(
     </div>
   </div>
 <script>
-const TYPE = ["BTS","PCA","REV"];
 const MODE = ["Relay","Polarity","Engine","BTS"];
 const COND = ["ANY","Меньше","Больше","Между"];
 let cfg = { rules: [[],[],[],[],[],[],[],[]] };
 let autoTimer = null;
+let lastStatus = null;
+let statusRequestInFlight = false;
 
 function msg(t){ document.getElementById('msg').textContent = t; }
 function opt(list,v){ return list.map((x,i)=>`<option value="${i}" ${i===v?'selected':''}>${x}</option>`).join(''); }
@@ -130,6 +131,35 @@ function modeForTarget(t){
   if (t <= 23) return 0;   // Relay
   return 1;                // Polarity
 }
+function isPcaTarget(t){
+  return Number(t) <= 15;
+}
+function mapRangeClamped(x, inA, inB, outA, outB){
+  if (Math.abs(inB - inA) < 0.001) return outA;
+  let t = (x - inA) / (inB - inA);
+  t = Math.max(0, Math.min(1, t));
+  return outA + (outB - outA) * t;
+}
+function currentInputUs(ch){
+  if (!lastStatus || !lastStatus.inputs || !lastStatus.inputs[ch]) return null;
+  return Number(lastStatus.inputs[ch].us);
+}
+function updatePcaHints(){
+  const ch = Number(document.getElementById('channelSel').value||0);
+  const arr = cfg.rules[ch] || [];
+  arr.forEach((r,idx)=>{
+    if (!isPcaTarget(r.tgt)) return;
+    const el = document.getElementById(`hint-${ch}-${idx}`);
+    if (!el) return;
+    const curUs = currentInputUs(ch);
+    let hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
+    if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+      const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
+      hintText += ` | ${curUs} -> ${mapped}`;
+    }
+    el.textContent = hintText;
+  });
+}
 
 function initChannels(){
   const s = document.getElementById('channelSel');
@@ -150,6 +180,8 @@ function sanitizeRule(r){
     cond: Math.min(3, Math.max(0, Number(r.cond||0))),
     a: Math.min(2100, Math.max(900, Number(r.a||1500))),
     b: Math.min(2500, Math.max(900, Number(r.b||2000))),
+    outA: Math.min(4095, Math.max(0, Number(r.outA||1000))),
+    outB: Math.min(4095, Math.max(0, Number(r.outB||2000))),
     tgt: tgt,
     mode: safeMode
   };
@@ -161,14 +193,16 @@ function renderRules(){
   body.innerHTML = "";
   const arr = cfg.rules[ch] || [];
   arr.forEach((r,idx)=>{
+    const pca = isPcaTarget(r.tgt);
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${idx+1}</td>
-      <td><select onchange="upd(${ch},${idx},'type',this.value)">${opt(TYPE, Number(r.type))}</select></td>
       <td><select onchange="upd(${ch},${idx},'mode',this.value)" disabled>${opt(MODE, Number(r.mode))}</select></td>
       <td><select onchange="upd(${ch},${idx},'cond',this.value)">${opt(COND, Number(r.cond))}</select></td>
       <td><input type="number" min="900" max="2100" value="${r.a}" onchange="upd(${ch},${idx},'a',this.value)"></td>
       <td><input type="number" min="900" max="2500" value="${r.b}" onchange="upd(${ch},${idx},'b',this.value)"></td>
+      <td><input type="number" min="0" max="4095" value="${r.outA}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outA',this.value)"></td>
+      <td><input type="number" min="0" max="4095" value="${r.outB}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outB',this.value)"></td>
       <td><select onchange="upd(${ch},${idx},'tgt',this.value)">${targetOptions(r.tgt)}</select></td>
       <td>
         <button class="gray" onclick="moveRule(${ch},${idx},-1)">↑</button>
@@ -176,6 +210,17 @@ function renderRules(){
         <button class="red" onclick="delRule(${ch},${idx})">Удалить</button>
       </td>`;
     body.appendChild(tr);
+    if (pca) {
+      const hint = document.createElement('tr');
+      const curUs = currentInputUs(ch);
+      let hintText = `A..B ${r.a}..${r.b} -> OutA..OutB ${r.outA}..${r.outB}`;
+      if (curUs !== null && curUs >= 900 && curUs <= 2100) {
+        const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.outA), Number(r.outB)));
+        hintText += ` | ${curUs} -> ${mapped}`;
+      }
+      hint.innerHTML = `<td id="hint-${ch}-${idx}" colspan="9" style="color:#475569;font-size:12px;padding-top:0">${hintText}</td>`;
+      body.appendChild(hint);
+    }
   });
   document.getElementById('jsonView').textContent = JSON.stringify(cfg, null, 2);
 }
@@ -191,7 +236,7 @@ function upd(ch,idx,key,val){
 
 function addRule(){
   const ch = Number(document.getElementById('channelSel').value||0);
-  cfg.rules[ch].push({type:1, cond:0, a:1500, b:2000, tgt:0, mode:2});
+  cfg.rules[ch].push({cond:0, a:1500, b:2000, outA:1000, outB:2000, tgt:0, mode:2});
   renderRules();
 }
 
@@ -211,13 +256,20 @@ function moveRule(ch, idx, dir){
 }
 
 async function refreshStatus(){
-  const r = await fetch('/api/status');
-  const txt = await r.text();
-  document.getElementById('status').textContent = txt;
+  if (statusRequestInFlight) return;
+  statusRequestInFlight = true;
   try{
+    const r = await fetch('/api/status', { cache: 'no-store' });
+    const txt = await r.text();
+    document.getElementById('status').textContent = txt;
     const st = JSON.parse(txt);
+    lastStatus = st;
     renderStatusTables(st);
+    updatePcaHints();
   }catch(e){}
+  finally{
+    statusRequestInFlight = false;
+  }
 }
 
 function renderStatusTables(st){
@@ -236,7 +288,11 @@ function renderStatusTables(st){
   (st.outputs || []).forEach(o=>{
     if (Number(o.idx) > 26) return;
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${targetLabel(o.idx)}</td><td>${o.active ? "1":"0"}</td><td>${Number(o.v01).toFixed(2)}</td><td>${Number(o.vs).toFixed(2)}</td>`;
+    let eff = "-";
+    if (Number(o.idx) <= 15 && o.pcaUs !== undefined) {
+      eff = `${o.pcaUs} us / ${o.pca12}`;
+    }
+    tr.innerHTML = `<td>${targetLabel(o.idx)}</td><td>${o.active ? "1":"0"}</td><td>${Number(o.v01).toFixed(2)}</td><td>${Number(o.vs).toFixed(2)}</td><td>${eff}</td>`;
     outBody.appendChild(tr);
   });
 }
@@ -248,7 +304,7 @@ function toggleAuto(){
     autoTimer = null;
   }
   if (on) {
-    autoTimer = setInterval(refreshStatus, 300);
+    autoTimer = setInterval(refreshStatus, 1000);
   }
 }
 
@@ -317,20 +373,21 @@ static const char* HELP_HTML = R"HTML(
     </div>
     <div class="card">
       <h2>Поля правила</h2>
-      <p><b>Тип (type):</b> <code>0 BTS</code>, <code>1 PCA</code>, <code>2 REV</code>.</p>
-      <p><b>Режим (mode):</b> ставится автоматически по цели: Relay / Polarity / Engine / BTS.</p>
+      <p><b>Режим (mode):</b> ставится автоматически по цели и вручную не выбирается: Relay / Polarity / Engine / BTS.</p>
       <p><b>Условие (cond):</b> <code>0 ANY</code>, <code>1 Меньше A</code>, <code>2 Больше A</code>, <code>3 Между A и B</code>.</p>
-      <p><b>A/B:</b> пороги PWM в микросекундах. Обычно: 1000 минимум, 1500 центр, 2000 максимум.</p>
+      <p><b>A/B:</b> входной диапазон PWM в микросекундах. Для PCA именно диапазон <code>A..B</code> будет растягиваться или сжиматься.</p>
+      <p><b>OutA/OutB:</b> выходной диапазон для PCA. Пример: вход <code>1200..1600</code> можно растянуть в выход <code>1000..2000</code>.</p>
       <p><b>Цель (tgt):</b> <code>0..15 PCA</code>, <code>16..19 BTS</code>, <code>20..23 Relay</code>, <code>24..26 Polarity</code>.</p>
     </div>
     <div class="card">
       <h2>Как настраивать</h2>
       <p>1. Выберите канал.</p>
       <p>2. Нажмите «Добавить правило».</p>
-      <p>3. Выберите условие и пороги A/B.</p>
-      <p>4. Выберите цель (выход).</p>
-      <p>5. Нажмите «Применить на устройство».</p>
-      <p>6. Если результат подходит, нажмите «Сохранить в NVS».</p>
+      <p>3. Выберите условие и диапазон A/B.</p>
+      <p>4. Если цель PCA, задайте OutA/OutB.</p>
+      <p>5. Выберите цель (выход).</p>
+      <p>6. Нажмите «Применить на устройство».</p>
+      <p>7. Если результат подходит, нажмите «Сохранить в NVS».</p>
     </div>
     <div class="card">
       <h2>Приоритет</h2>
@@ -341,7 +398,7 @@ static const char* HELP_HTML = R"HTML(
       <h2>Примеры</h2>
       <p><b>Реле по верхнему положению стика:</b> cond=Больше, A=1700, tgt=Relay 0..3.</p>
       <p><b>BTS мотор от стика:</b> cond=ANY, tgt=BTS 0..3.</p>
-      <p><b>PCA ШИМ от стика:</b> cond=ANY, tgt=PCA 0..15.</p>
+      <p><b>PCA ШИМ от стика:</b> cond=ANY, A=1000, B=2000, OutA=1000, OutB=2000, tgt=PCA 0..15.</p>
       <p><b>Реле полярности:</b> cond=ANY, tgt=Polarity 0..2.</p>
     </div>
     <div class="card">
@@ -356,16 +413,18 @@ static const char* HELP_HTML = R"HTML(
       <p><b>7. BTS мягкая зона старта:</b> cond=Между, A=1400, B=2000, tgt=BTS 2 (18).</p>
       <p><b>8. BTS реверс только внизу:</b> cond=Меньше, A=1480, tgt=BTS 3 (19).</p>
 
-      <p><b>9. PCA диммер 0..100%:</b> cond=ANY, tgt=PCA 0.</p>
-      <p><b>10. PCA только верхняя половина:</b> cond=Больше, A=1500, tgt=PCA 1.</p>
-      <p><b>11. PCA только нижняя половина:</b> cond=Меньше, A=1500, tgt=PCA 2.</p>
-      <p><b>12. PCA “центр активен”:</b> cond=Между, A=1400, B=1600, tgt=PCA 3.</p>
-      <p><b>13. PCA узкая зона:</b> cond=Между, A=1700, B=1800, tgt=PCA 4.</p>
-      <p><b>14. PCA резервный канал:</b> cond=ANY, tgt=PCA 5.</p>
+      <p><b>9. PCA полный диапазон 1:1:</b> cond=ANY, A=1000, B=2000, OutA=1000, OutB=2000, tgt=PCA 0.</p>
+      <p><b>10. PCA растянуть узкий вход:</b> cond=ANY, A=1200, B=1600, OutA=1000, OutB=2000, tgt=PCA 1.</p>
+      <p><b>11. PCA сжать широкий вход:</b> cond=ANY, A=1000, B=2000, OutA=1300, OutB=1700, tgt=PCA 2.</p>
+      <p><b>12. PCA инверсия:</b> cond=ANY, A=1000, B=2000, OutA=2000, OutB=1000, tgt=PCA 3.</p>
+      <p><b>13. PCA только верхняя зона:</b> cond=Больше, A=1500, B=2000, OutA=1000, OutB=2000, tgt=PCA 4.</p>
+      <p><b>14. PCA только центр:</b> cond=Между, A=1400, B=1600, OutA=1000, OutB=2000, tgt=PCA 5.</p>
+      <p><b>15. PCA очень узкая зона:</b> cond=Между, A=1700, B=1800, OutA=1000, OutB=2000, tgt=PCA 6.</p>
+      <p><b>16. PCA мягкий диапазон:</b> cond=ANY, A=1100, B=1900, OutA=1200, OutB=1800, tgt=PCA 7.</p>
 
-      <p><b>15. Polarity по стику:</b> cond=ANY, tgt=Polarity 0 (24).</p>
-      <p><b>16. Polarity только при верхнем уровне:</b> cond=Больше, A=1600, tgt=Polarity 1 (25).</p>
-      <p><b>17. Polarity только при нижнем уровне:</b> cond=Меньше, A=1400, tgt=Polarity 2 (26).</p>
+      <p><b>17. Polarity по стику:</b> cond=ANY, tgt=Polarity 0 (24).</p>
+      <p><b>18. Polarity только при верхнем уровне:</b> cond=Больше, A=1600, tgt=Polarity 1 (25).</p>
+      <p><b>19. Polarity только при нижнем уровне:</b> cond=Меньше, A=1400, tgt=Polarity 2 (26).</p>
 
       <p><b>18. Два правила на один Relay (логика окна):</b></p>
       <p>Правило A: cond=Больше, A=1600, tgt=Relay 0 (20).</p>
@@ -466,6 +525,7 @@ void webUiBegin(
   gLoadRules = loadRulesFn;
 
   WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
   WiFi.softAP(apSsid, apPass);
 
   server.on("/", HTTP_GET, handleIndex);

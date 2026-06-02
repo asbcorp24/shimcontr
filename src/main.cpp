@@ -35,6 +35,7 @@ enum Mode    { RELAY, POLARITY_RELAY, ENGINE, BTS_Mode };
 struct Rule {
   enum CondKind { ANY, BELOW, ABOVE, BETWEEN } kind = ANY;
   uint16_t aUs = 1500, bUs = 2000;
+  uint16_t outAUs = 1000, outBUs = 2000;
   ActType type = PCA_OUT;
   uint8_t targetIndex = 0;   // 0..26
   Mode mode = RELAY;
@@ -76,6 +77,8 @@ struct OutputState {
   float vs  = 0.0f;      // -1..+1
 };
 static volatile OutputState outState[32];
+static const bool SERIAL_DEBUG_ENABLED = true;
+static const uint32_t SERIAL_DEBUG_POLL_MS = 50;
 
 // ================== MENU ==================
 enum MenuState { MAIN, STATUSS, CHSEL, RULES_LIST, EDIT_RULE, SAVED };
@@ -87,6 +90,20 @@ static Rule* edit = nullptr;
 
 // ================== helpers ==================
 static inline int clampi(int v,int lo,int hi){ return v<lo?lo:(v>hi?hi:v); }
+static inline const char* targetName(uint8_t idx){
+  if(idx <= 15) return "PCA";
+  if(idx <= 19) return "BTS";
+  if(idx <= 23) return "Relay";
+  if(idx <= 26) return "Polarity";
+  return "?";
+}
+static inline int targetLocalIndex(uint8_t idx){
+  if(idx <= 15) return idx;
+  if(idx <= 19) return idx - 16;
+  if(idx <= 23) return idx - 20;
+  if(idx <= 26) return idx - 24;
+  return -1;
+}
 
 static const char* actName(ActType t){
   switch(t){ case BTS:return "BTS"; case PCA_OUT:return "PCA"; case REVERSER:return "REV"; }
@@ -120,10 +137,16 @@ static inline float pwm_to_signed(uint16_t us){
   float v = (us - 1500.0f) / 500.0f;
   return constrain(v, -1.0f, 1.0f);
 }
+static inline float map_range_clamped(float x, float inA, float inB, float outA, float outB){
+  if (fabsf(inB - inA) < 0.001f) return outA;
+  float t = (x - inA) / (inB - inA);
+  t = constrain(t, 0.0f, 1.0f);
+  return outA + (outB - outA) * t;
+}
 
 // ================== NVS SAVE/LOAD ==================
 void saveRules() {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(8192);
   JsonArray arr = doc.createNestedArray("rules");
   for(int ch=0; ch<8; ch++){
     JsonArray a = arr.createNestedArray();
@@ -133,6 +156,8 @@ void saveRules() {
       o["cond"]=(int)r.kind;
       o["a"]=r.aUs;
       o["b"]=r.bUs;
+      o["outA"]=r.outAUs;
+      o["outB"]=r.outBUs;
       o["tgt"]=r.targetIndex;
       o["mode"]=(int)r.mode;
     }
@@ -162,6 +187,8 @@ void loadRules() {
       r.kind = (Rule::CondKind)(int)o["cond"];
       r.aUs  = (uint16_t)(int)o["a"];
       r.bUs  = (uint16_t)(int)o["b"];
+      r.outAUs = o["outA"].isNull() ? 1000 : (uint16_t)(int)o["outA"];
+      r.outBUs = o["outB"].isNull() ? 2000 : (uint16_t)(int)o["outB"];
       r.targetIndex = (uint8_t)(int)o["tgt"];
       r.mode = (Mode)(int)o["mode"];
       rules[ch].push_back(r);
@@ -268,7 +295,8 @@ void logicTask(void*){
 
         // Primary behavior by output target group.
         if(out <= 15){
-          next[out].v01 = v01;      // PCA 0..1
+          float mappedOutUs = map_range_clamped((float)us, (float)r.aUs, (float)r.bUs, (float)r.outAUs, (float)r.outBUs);
+          next[out].v01 = constrain((mappedOutUs - 1000.0f) / 1000.0f, 0.0f, 1.0f);
           next[out].vs  = 0.0f;
         } else if(out <= 19){
           next[out].v01 = 1.0f;
@@ -292,7 +320,12 @@ void logicTask(void*){
             next[out].vs  = vs;
             break;
           case ENGINE:
-            next[out].v01 = v01;
+            if(out <= 15){
+              float mappedOutUs = map_range_clamped((float)us, (float)r.aUs, (float)r.bUs, (float)r.outAUs, (float)r.outBUs);
+              next[out].v01 = constrain((mappedOutUs - 1000.0f) / 1000.0f, 0.0f, 1.0f);
+            } else {
+              next[out].v01 = v01;
+            }
             next[out].vs  = 0.0f;
             break;
           case BTS_Mode:
@@ -314,7 +347,7 @@ void logicTask(void*){
 }
 
 String buildRulesJson() {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(8192);
   JsonArray arr = doc.createNestedArray("rules");
   for (int ch = 0; ch < 8; ch++) {
     JsonArray a = arr.createNestedArray();
@@ -324,6 +357,8 @@ String buildRulesJson() {
       o["cond"] = (int)r.kind;
       o["a"] = r.aUs;
       o["b"] = r.bUs;
+      o["outA"] = r.outAUs;
+      o["outB"] = r.outBUs;
       o["tgt"] = r.targetIndex;
       o["mode"] = (int)r.mode;
     }
@@ -334,7 +369,7 @@ String buildRulesJson() {
 }
 
 bool applyRulesJson(const String& s) {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(8192);
   if (deserializeJson(doc, s)) return false;
   JsonArray arr = doc["rules"];
   if (arr.isNull()) return false;
@@ -350,6 +385,8 @@ bool applyRulesJson(const String& s) {
       r.kind = (Rule::CondKind)clampi((int)o["cond"], 0, 3);
       r.aUs = (uint16_t)clampi((int)o["a"], 900, 2100);
       r.bUs = (uint16_t)clampi((int)o["b"], 900, 2500);
+      r.outAUs = o["outA"].isNull() ? 1000 : (uint16_t)clampi((int)o["outA"], 0, 4095);
+      r.outBUs = o["outB"].isNull() ? 2000 : (uint16_t)clampi((int)o["outB"], 0, 4095);
       r.targetIndex = (uint8_t)clampi((int)o["tgt"], 0, 26);
       r.mode = (Mode)clampi((int)o["mode"], 0, 3);
       rules[ch].push_back(r);
@@ -359,7 +396,7 @@ bool applyRulesJson(const String& s) {
 }
 
 String buildStatusJson() {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(8192);
   JsonArray in = doc.createNestedArray("inputs");
   for (int i = 0; i < 8; i++) {
     JsonObject o = in.createNestedObject();
@@ -375,6 +412,10 @@ String buildStatusJson() {
     o["active"] = outState[i].active;
     o["v01"] = outState[i].v01;
     o["vs"] = outState[i].vs;
+    if (i <= 15) {
+      o["pcaUs"] = (int)lroundf(1000.0f + outState[i].v01 * 1000.0f);
+      o["pca12"] = (int)lroundf(outState[i].v01 * 4095.0f);
+    }
   }
 
   String s;
@@ -424,6 +465,131 @@ void outputTask(void *p)
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void debugTask(void *p)
+{
+    if (!SERIAL_DEBUG_ENABLED)
+    {
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    Serial.println("[DBG] debugTask started");
+
+    uint16_t prevPwm[8] = {0};
+    bool prevPwmValid[8] = {0};
+    OutputState prevOut[27];
+    bool first = true;
+
+    for (int i = 0; i < 27; i++)
+    {
+        prevOut[i].active = false;
+        prevOut[i].v01 = 0.0f;
+        prevOut[i].vs = 0.0f;
+    }
+
+    for (;;)
+    {
+        bool inputsChanged = false;
+        bool outputsChanged = false;
+
+        for (int ch = 0; ch < 8; ch++)
+        {
+            uint32_t age = millis() - pwmStampMs[ch];
+            bool valid = (age <= 120 && pwmWidth[ch] >= 900 && pwmWidth[ch] <= 2100);
+            if (first || valid != prevPwmValid[ch] || (valid && pwmWidth[ch] != prevPwm[ch]))
+                inputsChanged = true;
+        }
+
+        for (int i = 0; i < 27; i++)
+        {
+            if (first ||
+                outState[i].active != prevOut[i].active ||
+                fabsf(outState[i].v01 - prevOut[i].v01) > 0.01f ||
+                fabsf(outState[i].vs - prevOut[i].vs) > 0.01f)
+            {
+                outputsChanged = true;
+                break;
+            }
+        }
+
+        if (inputsChanged || outputsChanged)
+        {
+            Serial.println("[DBG] ------------------------------");
+
+            if (inputsChanged)
+            {
+                Serial.print("[DBG] IN  ");
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    uint32_t age = millis() - pwmStampMs[ch];
+                    bool valid = (age <= 120 && pwmWidth[ch] >= 900 && pwmWidth[ch] <= 2100);
+                    if (valid) Serial.printf("CH%d=%u ", ch + 1, pwmWidth[ch]);
+                    else Serial.printf("CH%d=--- ", ch + 1);
+                }
+                Serial.println();
+            }
+
+            if (outputsChanged)
+            {
+                bool anyActive = false;
+                for (int i = 0; i < 27; i++)
+                {
+                    if (!outState[i].active) continue;
+                    anyActive = true;
+
+                    if (i <= 15)
+                    {
+                        int pcaUs = (int)lroundf(1000.0f + outState[i].v01 * 1000.0f);
+                        int pca12 = (int)lroundf(outState[i].v01 * 4095.0f);
+                        Serial.printf("[DBG] OUT %s%d active=1 v01=%.2f us=%d pwm12=%d\n",
+                                      targetName(i), targetLocalIndex(i), outState[i].v01, pcaUs, pca12);
+                    }
+                    else if (i <= 19)
+                    {
+                        Serial.printf("[DBG] OUT %s%d active=1 vs=%.2f\n",
+                                      targetName(i), targetLocalIndex(i), outState[i].vs);
+                    }
+                    else if (i <= 23)
+                    {
+                        Serial.printf("[DBG] OUT %s%d active=1 state=%s\n",
+                                      targetName(i), targetLocalIndex(i), outState[i].v01 > 0.5f ? "ON" : "OFF");
+                    }
+                    else
+                    {
+                        Serial.printf("[DBG] OUT %s%d active=1 on=%s dir=%s vs=%.2f\n",
+                                      targetName(i), targetLocalIndex(i),
+                                      fabs(outState[i].vs) > 0.1f ? "YES" : "NO",
+                                      outState[i].vs >= 0 ? "FWD" : "REV",
+                                      outState[i].vs);
+                    }
+                }
+
+                if (!anyActive)
+                {
+                    Serial.println("[DBG] OUT none active");
+                }
+            }
+        }
+
+        for (int ch = 0; ch < 8; ch++)
+        {
+            uint32_t age = millis() - pwmStampMs[ch];
+            prevPwmValid[ch] = (age <= 120 && pwmWidth[ch] >= 900 && pwmWidth[ch] <= 2100);
+            prevPwm[ch] = pwmWidth[ch];
+        }
+
+        for (int i = 0; i < 27; i++)
+        {
+            prevOut[i].active = outState[i].active;
+            prevOut[i].v01 = outState[i].v01;
+            prevOut[i].vs = outState[i].vs;
+        }
+
+        first = false;
+        vTaskDelay(pdMS_TO_TICKS(SERIAL_DEBUG_POLL_MS));
     }
 }
 
@@ -575,31 +741,37 @@ if(us>=900 && us<=2100)
     int fill = (int)(v01 * (barW-2));
     u8g2.drawBox(barX+1, barY+1, fill, barH-2);
 }
+  if(edit->targetIndex <= 15 && us>=900 && us<=2100){
+    float mappedOutUs = map_range_clamped((float)us, (float)edit->aUs, (float)edit->bUs, (float)edit->outAUs, (float)edit->outBUs);
+    char m[20];
+    snprintf(m,sizeof(m),"P:%4u", (unsigned)lroundf(mappedOutUs));
+    u8g2.drawUTF8(88, 20, m);
+  }
+
+  const int totalFields = 8;
+  const int visibleFields = 4;
+  int startField = clampi(fieldIdx - 1, 0, totalFields - visibleFields);
   char line[40];
 
-  snprintf(line,sizeof(line),"Тип: %s", actName(edit->type));
-  if(fieldIdx==0) u8g2.drawBox(0,3,128,10);
-  u8g2.setDrawColor(fieldIdx==0?0:1); u8g2.drawUTF8(2,10,line); u8g2.setDrawColor(1);
-
-  snprintf(line,sizeof(line),"Режим: %s", modeName(edit->mode));
-  if(fieldIdx==1) u8g2.drawBox(0,13,128,10);
-  u8g2.setDrawColor(fieldIdx==1?0:1); u8g2.drawUTF8(2,20,line); u8g2.setDrawColor(1);
-
-  snprintf(line,sizeof(line),"Условие: %s", condName(edit->kind));
-  if(fieldIdx==2) u8g2.drawBox(0,23,128,10);
-  u8g2.setDrawColor(fieldIdx==2?0:1); u8g2.drawUTF8(2,30,line); u8g2.setDrawColor(1);
-
-  snprintf(line,sizeof(line),"A: %u", edit->aUs);
-  if(fieldIdx==3) u8g2.drawBox(0,33,128,10);
-  u8g2.setDrawColor(fieldIdx==3?0:1); u8g2.drawUTF8(2,40,line); u8g2.setDrawColor(1);
-
-  snprintf(line,sizeof(line),"B: %u", edit->bUs);
-  if(fieldIdx==4) u8g2.drawBox(0,43,128,10);
-  u8g2.setDrawColor(fieldIdx==4?0:1); u8g2.drawUTF8(2,50,line); u8g2.setDrawColor(1);
-
-  snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex);
-  if(fieldIdx==5) u8g2.drawBox(0,53,128,10);
-  u8g2.setDrawColor(fieldIdx==5?0:1); u8g2.drawUTF8(2,60,line); u8g2.setDrawColor(1);
+  for(int row=0; row<visibleFields; row++){
+    int f = startField + row;
+    int y = 29 + row * 9;
+    switch(f){
+      case 0: snprintf(line,sizeof(line),"Тип: %s", actName(edit->type)); break;
+      case 1: snprintf(line,sizeof(line),"Режим: %s", modeName(edit->mode)); break;
+      case 2: snprintf(line,sizeof(line),"Условие: %s", condName(edit->kind)); break;
+      case 3: snprintf(line,sizeof(line),"A: %u", edit->aUs); break;
+      case 4: snprintf(line,sizeof(line),"B: %u", edit->bUs); break;
+      case 5: snprintf(line,sizeof(line),"OutA: %u", edit->outAUs); break;
+      case 6: snprintf(line,sizeof(line),"OutB: %u", edit->outBUs); break;
+      case 7: snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex); break;
+      default: line[0]=0; break;
+    }
+    if(fieldIdx==f) u8g2.drawBox(0,y-7,128,9);
+    u8g2.setDrawColor(fieldIdx==f?0:1);
+    u8g2.drawUTF8(2,y,line);
+    u8g2.setDrawColor(1);
+  }
 
   halI2CLock();
   u8g2.sendBuffer();
@@ -677,11 +849,13 @@ if(back)  Serial.println("BACK");
           case 2: edit->kind = (Rule::CondKind)((((int)edit->kind)+(d>0?1:3))%4); break;
           case 3: edit->aUs  = clampi((int)edit->aUs + step, 900, 2100); break;
           case 4: edit->bUs  = clampi((int)edit->bUs + step, 900, 2500); break;
-          case 5: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
+          case 5: edit->outAUs = clampi((int)edit->outAUs + step, 0, 4095); break;
+          case 6: edit->outBUs = clampi((int)edit->outBUs + step, 0, 4095); break;
+          case 7: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
         }
       }
       if(click){
-        fieldIdx++; if(fieldIdx>5) fieldIdx=0;
+        fieldIdx++; if(fieldIdx>7) fieldIdx=0;
       }
       if(back) menu=RULES_LIST;
     } else if(menu==SAVED){
@@ -737,6 +911,7 @@ void setup(){
   xTaskCreatePinnedToCore(pwmTask,   "PWM",  4096, nullptr, 3, nullptr, 0);
   xTaskCreatePinnedToCore(logicTask, "LOGIC", 4096, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(outputTask,"OUT",  4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(debugTask, "DBG",  4096, nullptr, 1, nullptr, 1);
   xTaskCreatePinnedToCore(uiTask,    "UI",   4096, nullptr, 1, nullptr, 1);
 
   webUiBegin(
