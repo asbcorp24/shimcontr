@@ -1,4 +1,4 @@
-#include "web_ui.h"
+﻿#include "web_ui.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -71,7 +71,7 @@ static const char* INDEX_HTML = R"HTML(
         </div>
         <table style="margin-top:10px">
           <thead>
-            <tr><th>#</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>OutA</th><th>OutB</th><th>BTSmin</th><th>BTSmax</th><th>Цель</th><th></th></tr>
+            <tr><th>#</th><th>Режим</th><th>Условие</th><th>A</th><th>B</th><th>OutA</th><th>OutB</th><th>BTS%</th><th>Цель</th><th></th></tr>
           </thead>
           <tbody id="rulesBody"></tbody>
         </table>
@@ -102,23 +102,23 @@ static const char* INDEX_HTML = R"HTML(
             <button class="small" onclick="presetPcaStretch()">Вставить</button>
           </div>
           <div class="preset">
-            <h3>BTS реверс</h3>
-            <p>Полный диапазон назад-вперед через ноль.</p>
-            <button class="small" onclick="presetBtsFullReverse()">Вставить</button>
+            <h3>BTS вперед 100%</h3>
+            <p>Если условие выполнилось, на выход уйдет +100%.</p>
+            <button class="small" onclick="presetBtsForward100()">Вставить</button>
           </div>
           <div class="preset">
-            <h3>BTS вперед после порога</h3>
-            <p>Плавный разгон только выше 1700.</p>
-            <button class="small" onclick="presetBtsForwardAfter()">Вставить</button>
+            <h3>BTS назад 100%</h3>
+            <p>Если условие выполнилось, на выход уйдет -100%.</p>
+            <button class="small" onclick="presetBtsReverse100()">Вставить</button>
           </div>
           <div class="preset">
-            <h3>BTS назад до порога</h3>
-            <p>Плавный разгон назад только ниже 1300.</p>
-            <button class="small" onclick="presetBtsReverseBefore()">Вставить</button>
+            <h3>BTS стоп</h3>
+            <p>Если условие выполнилось, на выход уйдет 0%.</p>
+            <button class="small" onclick="presetBtsStop()">Вставить</button>
           </div>
           <div class="preset">
             <h3>BTS вперед / стоп / назад</h3>
-            <p>Сразу вставляет 3 правила на один BTS: верх, центр, низ.</p>
+            <p>Сразу вставляет 3 фиксированных правила на один BTS: верх, центр, низ.</p>
             <button class="small" onclick="presetBtsFwdStopRev()">Вставить</button>
           </div>
           <div class="preset">
@@ -244,14 +244,13 @@ function sanitizeRule(r){
     b: Math.min(2500, Math.max(900, Number(r.b||2000))),
     outA: Math.min(4095, Math.max(0, Number(r.outA||1000))),
     outB: Math.min(4095, Math.max(0, Number(r.outB||2000))),
-    btsMin: Math.min(100, Math.max(-100, Number(r.btsMin||-100))),
-    btsMax: Math.min(100, Math.max(-100, Number(r.btsMax||100))),
+    bts: Math.min(100, Math.max(-100, Number((r.bts !== undefined ? r.bts : r.btsPct) || 0))),
     tgt: tgt,
     mode: modeForTarget(tgt)
   };
 }
 function makeRule(p){
-  return sanitizeRule(Object.assign({cond:0,a:1500,b:2000,outA:1000,outB:2000,btsMin:-100,btsMax:100,tgt:0,mode:2}, p||{}));
+  return sanitizeRule(Object.assign({cond:0,a:1500,b:2000,outA:1000,outB:2000,bts:0,tgt:0,mode:2}, p||{}));
 }
 function pushRule(rule){
   const ch = currentChannel();
@@ -275,11 +274,7 @@ function updateHints(){
         hintText += ` | ${curUs} -> ${mapped}`;
       }
     } else if (bts) {
-      hintText = `A..B ${r.a}..${r.b} -> BTS ${r.btsMin}..${r.btsMax}%`;
-      if (curUs !== null && curUs >= 900 && curUs <= 2100) {
-        const mapped = Math.round(mapRangeClamped(curUs, Number(r.a), Number(r.b), Number(r.btsMin), Number(r.btsMax)));
-        hintText += ` | ${curUs} -> ${mapped}%`;
-      }
+      hintText = `При выполнении условия -> BTS ${r.bts}%`;
     }
     el.textContent = hintText;
   });
@@ -311,8 +306,7 @@ function renderRules(){
       <td><input type="number" min="900" max="2500" value="${r.b}" onchange="upd(${ch},${idx},'b',this.value)"></td>
       <td><input type="number" min="0" max="4095" value="${r.outA}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outA',this.value)"></td>
       <td><input type="number" min="0" max="4095" value="${r.outB}" ${pca ? "" : "disabled"} onchange="upd(${ch},${idx},'outB',this.value)"></td>
-      <td><input type="number" min="-100" max="100" value="${r.btsMin}" ${bts ? "" : "disabled"} onchange="upd(${ch},${idx},'btsMin',this.value)"></td>
-      <td><input type="number" min="-100" max="100" value="${r.btsMax}" ${bts ? "" : "disabled"} onchange="upd(${ch},${idx},'btsMax',this.value)"></td>
+      <td><input type="number" min="-100" max="100" value="${r.bts}" ${bts ? "" : "disabled"} onchange="upd(${ch},${idx},'bts',this.value)"></td>
       <td><select onchange="upd(${ch},${idx},'tgt',this.value)">${targetOptions(r.tgt)}</select></td>
       <td>
         <button class="gray small" onclick="moveRule(${ch},${idx},-1)">↑</button>
@@ -322,7 +316,7 @@ function renderRules(){
     body.appendChild(tr);
     if (pca || bts) {
       const hint = document.createElement('tr');
-      hint.innerHTML = `<td id="hint-${ch}-${idx}" colspan="11" style="color:#475569;font-size:12px;padding-top:0"></td>`;
+      hint.innerHTML = `<td id="hint-${ch}-${idx}" colspan="10" style="color:#475569;font-size:12px;padding-top:0"></td>`;
       body.appendChild(hint);
     }
   });
@@ -356,13 +350,13 @@ function presetRelayHigh(){ pushRule({cond:2,a:1700,tgt:20}); renderRules(); msg
 function presetRelayCenter(){ pushRule({cond:3,a:1450,b:1550,tgt:20}); renderRules(); msg("Добавлен пресет Relay центр"); }
 function presetPcaLinear(){ pushRule({cond:0,a:1000,b:2000,outA:1000,outB:2000,tgt:0}); renderRules(); msg("Добавлен пресет PCA 1:1"); }
 function presetPcaStretch(){ pushRule({cond:0,a:1200,b:1600,outA:1000,outB:2000,tgt:0}); renderRules(); msg("Добавлен пресет PCA растянуть"); }
-function presetBtsFullReverse(){ pushRule({cond:0,a:1000,b:2000,btsMin:-100,btsMax:100,tgt:16}); renderRules(); msg("Добавлен пресет BTS реверс"); }
-function presetBtsForwardAfter(){ pushRule({cond:2,a:1700,b:2000,btsMin:0,btsMax:100,tgt:16}); renderRules(); msg("Добавлен пресет BTS вперед после порога"); }
-function presetBtsReverseBefore(){ pushRule({cond:1,a:1300,b:1000,btsMin:0,btsMax:-100,tgt:16}); renderRules(); msg("Добавлен пресет BTS назад до порога"); }
+function presetBtsForward100(){ pushRule({cond:2,a:1700,bts:100,tgt:16}); renderRules(); msg("Добавлен пресет BTS вперед 100%"); }
+function presetBtsReverse100(){ pushRule({cond:1,a:1300,bts:-100,tgt:16}); renderRules(); msg("Добавлен пресет BTS назад 100%"); }
+function presetBtsStop(){ pushRule({cond:3,a:1400,b:1600,bts:0,tgt:16}); renderRules(); msg("Добавлен пресет BTS стоп"); }
 function presetBtsFwdStopRev(){
-  pushRule({cond:2,a:1700,b:2000,btsMin:0,btsMax:100,tgt:16});
-  pushRule({cond:3,a:1400,b:1600,btsMin:0,btsMax:0,tgt:16});
-  pushRule({cond:1,a:1300,b:1000,btsMin:0,btsMax:-100,tgt:16});
+  pushRule({cond:2,a:1700,bts:100,tgt:16});
+  pushRule({cond:3,a:1400,b:1600,bts:0,tgt:16});
+  pushRule({cond:1,a:1300,bts:-100,tgt:16});
   renderRules();
   msg("Добавлен пресет BTS вперед / стоп / назад");
 }
@@ -486,7 +480,7 @@ static const char* HELP_HTML = R"HTML(
       <p><b>Условие:</b> <code>ANY</code>, <code>Меньше A</code>, <code>Больше A</code>, <code>Между A и B</code>.</p>
       <p><b>A/B:</b> входной диапазон PWM. Обычно <code>1000</code> минимум, <code>1500</code> центр, <code>2000</code> максимум.</p>
       <p><b>OutA/OutB:</b> используются для PCA. Диапазон входа <code>A..B</code> преобразуется в выход <code>OutA..OutB</code>.</p>
-      <p><b>BTSmin/BTSmax:</b> используются для BTS. Диапазон входа <code>A..B</code> преобразуется в скорость от <code>BTSmin</code> до <code>BTSmax</code>.</p>
+      <p><b>BTS%:</b> используется для BTS. Если условие выполнилось, на выход уходит именно это фиксированное значение от <code>-100</code> до <code>100</code>.</p>
       <p><b>Цель:</b> <code>0..15 PCA</code>, <code>16..19 BTS</code>, <code>20..23 Relay</code>, <code>24..26 Polarity</code>.</p>
     </div>
     <div class="card">
@@ -494,7 +488,7 @@ static const char* HELP_HTML = R"HTML(
       <p>1. Выберите входной канал.</p>
       <p>2. Добавьте правило вручную или вставьте готовый пресет.</p>
       <p>3. Выберите цель и проверьте, что режим подставился правильно.</p>
-      <p>4. Настройте условие, пороги A/B и диапазоны OutA/OutB или BTSmin/BTSmax.</p>
+      <p>4. Настройте условие, пороги A/B и значения OutA/OutB или BTS%.</p>
       <p>5. Нажмите "Применить на устройство".</p>
       <p>6. Проверьте результат в блоке "Статус".</p>
       <p>7. Если все правильно, нажмите "Сохранить в NVS".</p>
@@ -518,13 +512,13 @@ static const char* HELP_HTML = R"HTML(
     </div>
     <div class="card">
       <h2>BTS</h2>
-      <p>BTS используется для управления мотором через BTS7960. Сейчас BTS работает только в диапазонном режиме.</p>
-      <p><b>Как выбирать диапазон:</b></p>
-      <p><code>0..100</code> только вперед, <code>-100..0</code> только назад, <code>-100..100</code> полный реверс, <code>0..0</code> стоп.</p>
+      <p>BTS используется для управления мотором через BTS7960. Если условие выполнилось, на выход уходит фиксированное значение BTS%.</p>
+      <p><b>Как выбирать BTS%:</b> <code>100</code> это вперед на 100%, <code>-100</code> это назад на 100%, <code>0</code> это стоп.</p>
       <p><b>Примеры:</b></p>
-      <p>Полный реверс: cond=ANY, A=1000, B=2000, BTSmin=-100, BTSmax=100, tgt=BTS 0.</p>
-      <p>Только вперед: cond=ANY, A=1000, B=2000, BTSmin=0, BTSmax=100, tgt=BTS 1.</p>
-      <p>Вперед / стоп / назад: три правила на один BTS, верх, центр и низ.</p>
+      <p>Вперед: cond=Больше, A=1700, BTS%=100, tgt=BTS 0.</p>
+      <p>Назад: cond=Меньше, A=1300, BTS%=-100, tgt=BTS 0.</p>
+      <p>Стоп: cond=Между, A=1400, B=1600, BTS%=0, tgt=BTS 0.</p>
+      <p>Для набора вперед / стоп / назад используйте три отдельных правила на один BTS.</p>
     </div>
     <div class="card">
       <h2>Polarity</h2>
@@ -743,3 +737,4 @@ void webUiSetEnabled(bool enabled) {
   if (enabled) webStartInternal();
   else webStopInternal();
 }
+

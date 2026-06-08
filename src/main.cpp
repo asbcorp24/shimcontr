@@ -153,20 +153,8 @@ static inline float map_range_clamped(float x, float inA, float inB, float outA,
   return outA + (outB - outA) * t;
 }
 static inline float compute_bts_value(uint16_t us, const Rule& r){
-  switch (r.kind) {
-    case Rule::ABOVE:
-      return constrain(map_range_clamped((float)us, (float)r.aUs, 2000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
-    case Rule::BELOW:
-      return constrain(map_range_clamped((float)us, (float)r.aUs, 1000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
-    case Rule::BETWEEN:
-      return constrain(map_range_clamped((float)us, (float)r.aUs, (float)r.bUs, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
-    case Rule::ANY:
-    default:
-      return constrain(map_range_clamped((float)us, 1000.0f, 2000.0f, (float)r.btsMinPct, (float)r.btsMaxPct) / 100.0f, -1.0f, 1.0f);
-  }
-
-  // Fixed BTS mode is temporarily disabled.
-  // return constrain((float)r.btsPct / 100.0f, -1.0f, 1.0f);
+  (void)us;
+  return constrain((float)r.btsPct / 100.0f, -1.0f, 1.0f);
 }
 
 // ================== NVS SAVE/LOAD ==================
@@ -804,11 +792,11 @@ if(us>=900 && us<=2100)
     u8g2.drawUTF8(88, 20, m);
   } else if(edit->targetIndex >= 16 && edit->targetIndex <= 19){
     char m[20];
-    snprintf(m,sizeof(m),"B:%d..%d", edit->btsMinPct, edit->btsMaxPct);
+    snprintf(m,sizeof(m),"B:%d%%", edit->btsPct);
     u8g2.drawUTF8(74, 20, m);
   }
 
-  const int totalFields = 10;
+  const int totalFields = 9;
   const int visibleFields = 4;
   int startField = clampi(fieldIdx - 1, 0, totalFields - visibleFields);
   char line[40];
@@ -824,9 +812,8 @@ if(us>=900 && us<=2100)
       case 4: snprintf(line,sizeof(line),"B: %u", edit->bUs); break;
       case 5: snprintf(line,sizeof(line),"OutA: %u", edit->outAUs); break;
       case 6: snprintf(line,sizeof(line),"OutB: %u", edit->outBUs); break;
-      case 7: snprintf(line,sizeof(line),"BTSmin: %d", edit->btsMinPct); break;
-      case 8: snprintf(line,sizeof(line),"BTSmax: %d", edit->btsMaxPct); break;
-      case 9: snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex); break;
+      case 7: snprintf(line,sizeof(line),"BTS%%: %d", edit->btsPct); break;
+      case 8: snprintf(line,sizeof(line),"Цель: %u", edit->targetIndex); break;
       default: line[0]=0; break;
     }
     if(fieldIdx==f) u8g2.drawBox(0,y-7,128,9);
@@ -920,13 +907,12 @@ if(back)  Serial.println("BACK");
           case 4: edit->bUs  = clampi((int)edit->bUs + step, 900, 2500); break;
           case 5: edit->outAUs = clampi((int)edit->outAUs + step, 0, 4095); break;
           case 6: edit->outBUs = clampi((int)edit->outBUs + step, 0, 4095); break;
-          case 7: edit->btsMinPct = clampi((int)edit->btsMinPct + (d>0?5:-5), -100, 100); break;
-          case 8: edit->btsMaxPct = clampi((int)edit->btsMaxPct + (d>0?5:-5), -100, 100); break;
-          case 9: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
+          case 7: edit->btsPct = clampi((int)edit->btsPct + (d>0?5:-5), -100, 100); break;
+          case 8: edit->targetIndex = clampi((int)edit->targetIndex + (d>0?1:-1), 0, 26); break;
         }
       }
       if(click){
-        fieldIdx++; if(fieldIdx>9) fieldIdx=0;
+        fieldIdx++; if(fieldIdx>8) fieldIdx=0;
       }
       if(back) menu=RULES_LIST;
     } else if(menu==SAVED){
